@@ -1,0 +1,10 @@
+{
+  "bootstrap-sha": "159788f2bfae5819d278f26aa60d257e13e7b9ea",
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "liquid",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+label,case_id,title,category,mode,overall_score,any_critical_failure,task_status,quality_status,source_pack_status,advisory_model_self_score,user_intent_fit,direct_answer_usefulness,evidence_claim_traceability,source_quality_and_diversity,official_rumor_opinion_separation,uncertainty_and_conflict_handling,information_resolution,practical_next_steps,structure_and_readability
+intermediate-structured-fixture-20260515T080130Z,01-product-decision,Current Product Decision With Specs And Tradeoffs,product-decision,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5
+intermediate-structured-fixture-20260515T080130Z,02-local-recommendation,Local Recommendation With Constraints,local-recommendation,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5
+intermediate-structured-fixture-20260515T080130Z,03-historical-explanation,Historical Chronology And Causality,historical-explanation,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5
+intermediate-structured-fixture-20260515T080130Z,04-weak-source-rumor,Weak-Source Rumor And Unofficial Claim,weak-source-rumor,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5
+intermediate-structured-fixture-20260515T080130Z,05-conflicting-current-events,Conflicting Current-Events Evidence,conflicting-current-events,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5
+intermediate-structured-fixture-20260515T080130Z,06-numeric-comparison,Numerical Comparison With Dates Prices Or Versions,numeric-comparison,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5
+intermediate-structured-fixture-20260515T080130Z,07-niche-troubleshooting,Sparse Technical Troubleshooting,niche-troubleshooting,fixture,4.89,false,completed,passed,success,,5,5,5,4,5,5,5,5,5

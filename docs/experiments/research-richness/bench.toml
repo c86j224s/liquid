@@ -1,0 +1,77 @@
+# Research Richness benchmark package manifest.
+#
+# This file is a convention contract first, not a required runtime input.
+# Keep `research_bench` as the execution engine; teach it to read this
+# manifest only after another benchmark repeats the same stable fields.
+
+[benchmark]
+id = "research-richness"
+name = "Research Richness Benchmark"
+owner = "research-quality"
+execution_engine = "cargo run --bin research_bench"
+improvement_runner = "improvement-run.sh"
+workflow_doc = "workflow.md"
+rubric_doc = "rubric.md"
+artifact_schema_doc = "artifact-schema.md"
+replay_doc = "replay-fixtures.md"
+
+[paths]
+cases_dir = "cases"
+live_gate_cases_dir = "live-gate-cases"
+runs_dir = "runs"
+# Local archive path used by some operators; intentionally excluded from this snapshot.
+customer_samples_dir = "customer-samples"
+
+[modes.fixture]
+purpose = "cheap controller and reporting smoke coverage"
+default_label = "baseline-dry-run"
+
+[modes.replay]
+purpose = "deterministic validation of frozen live bundles"
+requires_replay_fixture_root = true
+
+[modes.live]
+purpose = "bounded validation of provider behavior, current-source discovery, and model behavior"
+requires_model_input = true
+default_runs_dir_policy = "repo-for-durable-runs-temp-for-sensitive-live-runs"
+
+[artifact_policy]
+commit_allowlist = [
+  "README.md",
+  "workflow.md",
+  "artifact-schema.md",
+  "rubric.md",
+  "replay-fixtures.md",
+  "final-report.md",
+  "evaluation.md",
+  "runs/*.md",
+  "runs/*.csv",
+  "runs/*/*-final-output.md",
+]
+local_archive_only = [
+  "runs/*.json",
+  "runs/*.ndjson",
+  "runs/*/*-source-diagnostics.json",
+  "runs/*/*-controller-artifacts.json",
+  "runs/*/*-resolved-system-prompt.md",
+  "runs/*/*-resolved-user-prompt.md",
+]
+
+[quality_gates]
+strict_thresholds_are_default = true
+score_source = "research_bench_structured_rubric"
+fixture_scores_are_pipeline_evidence_only = true
+replay_scores_are_deterministic_validation_evidence = true
+live_scores_are_non_deterministic_quality_measurements = true
+
+[[gate_ladder]]
+id = "artifact-review"
+purpose = "artifact integrity, replay consistency, and durable documentation"
+
+[[gate_ladder]]
+id = "qa-review"
+purpose = "source relevance, source-pack quality, code review, and security review"
+
+[[gate_ladder]]
+id = "architecture-review"
+purpose = "strategic judgment when a score, architecture decision, or quality interpretation may be misleading"

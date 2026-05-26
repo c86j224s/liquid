@@ -1,0 +1,30 @@
+/target
+data/
+logs/
+
+# Local env and server state
+.env
+.server.pid
+server.log
+.antigravitycli/
+.claude/
+.fleet/
+.gemini/
+
+# Local JS tooling artifacts
+node_modules/
+package.json
+package-lock.json
+
+# Local debug scripts
+check_errors.js
+debug_mobile.js
+
+# Local Gemini prompts
+.gemini/prompts/
+
+# Generated research benchmark artifact directories can contain prompts and diagnostics
+docs/experiments/research-richness/runs/*/
+!docs/experiments/research-richness/runs/*/
+docs/experiments/research-richness/runs/*/*
+!docs/experiments/research-richness/runs/*/*-final-output.md

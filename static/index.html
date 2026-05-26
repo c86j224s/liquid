@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liquid</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Liquid Refraction Filter -->
+    <svg style="display: none;">
+        <filter id="liquid-refraction">
+            <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="3" result="noise" />
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="5" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+    </svg>
+
+    <div class="background-animation"></div>
+
+    <div class="app-container">
+        <!-- Primary Header -->
+        <header id="primary-header" class="glass">
+            <div class="header-left">
+                <div id="app-home-link" class="logo-wrapper" title="홈으로 이동">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2C12 2 4 10 4 15C4 19.4183 7.58172 23 12 23C16.4183 23 20 19.4183 20 15C20 10 12 2 12 2Z" fill="url(#logo-gradient)"/>
+                        <defs>
+                            <linearGradient id="logo-gradient" x1="4" y1="2" x2="20" y2="23" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#818cf8"/>
+                                <stop offset="1" stop-color="#6366f1"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <span class="logo-text">Liquid</span>
+                </div>
+            </div>
+            <div id="viewer-title-strip" class="viewer-title-strip hidden" aria-live="polite">
+                <span id="viewer-title-text" class="viewer-title-text"></span>
+            </div>
+            <div class="header-right">
+                <button id="toggle-search-btn" class="icon-btn" title="검색">🔍</button>
+                <button id="toggle-tasks-btn" class="icon-btn" title="작업 내역">📋</button>
+                <button id="library-toggle" class="icon-btn" title="라이브러리 전환">📚</button>
+            </div>
+        </header>
+
+        <!-- Secondary Header -->
+        <div id="secondary-header" class="glass hidden">
+            <!-- Search Pane -->
+            <div id="search-pane" class="header-pane hidden">
+                <div class="search-container">
+                    <input type="text" id="search-input" placeholder="지식 검색...">
+                </div>
+            </div>
+            <!-- Library Actions Pane -->
+            <div id="library-actions-pane" class="header-pane hidden">
+                <div class="library-info">
+                    <h2>Knowledge Library</h2>
+                    <p id="library-stats"></p>
+                </div>
+                <div class="filter-section">
+                    <div class="filter-tabs">
+                        <button class="filter-btn active" data-filter="published">Published</button>
+                        <button class="filter-btn" data-filter="draft">Draft</button>
+                        <button class="filter-btn" data-filter="archived">Archived</button>
+                        <button class="filter-btn" data-filter="all">All</button>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <label for="file-upload" class="icon-btn" title="파일 업로드">📤</label>
+                    <form id="upload-form" style="display:none">
+                        <input type="file" id="file-upload" name="file" accept=".md,.html">
+                    </form>
+                    <button id="header-scrap-btn" class="icon-btn" title="웹 스크랩">🔗</button>
+                    <button id="new-research-btn" class="icon-btn" title="새 주제 조사">🧪</button>
+                </div>
+            </div>
+        </div>
+
+        <main class="main-content">
+            <div id="content-viewer" class="content-viewer glass">
+                <div id="viewer-floating-menu" class="viewer-floating-menu hidden" aria-label="콘텐츠 빠른 작업">
+                    <button id="viewer-scroll-top-btn" class="icon-btn" title="맨 위로 이동" aria-label="맨 위로 이동">↑</button>
+                    <button id="copy-content-btn" class="icon-btn" title="원본 내용을 클립보드에 복사" aria-label="원본 내용 복사">📋</button>
+                    <button id="relationship-graph-btn" class="icon-btn hidden" title="문서 관계 그래프" aria-label="문서 관계 그래프">↔</button>
+                    <button id="viewer-scroll-bottom-btn" class="icon-btn" title="맨 아래로 이동" aria-label="맨 아래로 이동">↓</button>
+                </div>
+                <div class="placeholder">
+                    <h2>지식을 선택하여 내용을 확인하세요</h2>
+                    <p>마크다운 및 HTML 파일을 지원합니다.</p>
+                </div>
+            </div>
+
+            <div id="library-view" class="library-view hidden">
+                <div class="drawer-bar glass">
+                    <div class="drawer-list" id="drawer-list"></div>
+                    <div class="drawer-create">
+                        <input type="text" id="drawer-name-input" maxlength="80" placeholder="New drawer">
+                        <button id="create-drawer-btn" class="btn-secondary">Create</button>
+                    </div>
+                </div>
+
+                <div id="library-grid" class="library-grid"></div>
+            </div>
+
+            <!-- Floating Selection Bar -->
+            <div id="selection-count" class="selection-floating-bar glass hidden">
+                <div class="selection-info">
+                    <button id="selection-chip" class="selection-chip" type="button" aria-expanded="false" title="선택 작업 펼치기">
+                        <span id="count-text">0개 선택됨</span>
+                        <span class="selection-chip-icon" aria-hidden="true">▴</span>
+                    </button>
+                </div>
+                <div class="selection-actions">
+                    <button id="multi-research-btn" class="btn-primary">융합 조사 의뢰</button>
+                    <select id="selection-drawer-select" class="glass-select" title="선택 항목에 할당할 서랍"></select>
+                    <div class="drawer-split-actions" aria-label="선택 항목 서랍 변경">
+                        <button id="assign-selection-drawer-btn" class="btn-secondary">할당</button>
+                        <button id="clear-selection-drawer-btn" class="btn-secondary">해제</button>
+                    </div>
+                    <button id="archive-selection-btn" class="btn-secondary">보관</button>
+                    <button id="delete-selection-btn" class="btn-secondary danger-action">삭제</button>
+                    <button id="clear-selection" class="btn-secondary">선택 취소</button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Relationship Graph Modal -->
+    <div id="relationship-graph-modal" class="modal-overlay hidden">
+        <div class="modal-content glass relationship-graph-modal-content">
+            <div class="relationship-graph-header">
+                <h3>문서 관계 그래프</h3>
+                <button id="close-relationship-graph" class="close-btn" type="button" aria-label="닫기">✕</button>
+            </div>
+            <p id="relationship-graph-title" class="relationship-graph-title"></p>
+            <div id="relationship-graph-body" class="relationship-graph-body"></div>
+        </div>
+    </div>
+
+    <!-- Task Modal -->
+    <div id="task-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3>최근 작업 내역</h3>
+            <div class="task-worker-meta">
+                <span>동시 작업 CLI/로컬</span>
+                <strong id="task-worker-count">1</strong>
+            </div>
+            <div class="task-section">
+                <ul id="task-list"></ul>
+            </div>
+            <div class="modal-actions" style="margin-top: 20px;">
+                <button id="close-task-modal" class="btn-primary">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scrap Modal -->
+    <div id="scrap-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3>웹 페이지 스크랩</h3>
+            <div class="input-container">
+                <label>스크랩 모드</label>
+                <select id="scrap-mode-select" class="glass-select">
+                    <option value="general">General</option>
+                    <option value="geeknews">GeekNews</option>
+                </select>
+            </div>
+            <div class="input-container">
+                <label>대상 URL</label>
+                <input type="text" id="scrap-url" placeholder="https://example.com/article">
+            </div>
+            <div class="input-container">
+                <label>참고 링크</label>
+                <textarea id="scrap-references" placeholder="참고 링크를 한 줄에 하나씩 입력하세요" rows="3"></textarea>
+            </div>
+            <div class="input-container">
+                <label>번역 엔진</label>
+                <select id="translate-model-select" class="glass-select"></select>
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-scrap" class="btn-secondary">취소</button>
+                <button id="scrap-btn" class="btn-primary">📄 스크랩</button>
+                <button id="scrap-translate-btn" class="btn-primary" style="background: #10b981">🌐 스크랩 + 번역</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Translate Modal -->
+    <div id="translate-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3>문서 한국어 번역</h3>
+            <p id="translate-target-text" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 15px;"></p>
+            <div class="input-container">
+                <label>번역 엔진</label>
+                <select id="translate-file-model-select" class="glass-select"></select>
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-translate" class="btn-secondary">취소</button>
+                <button id="start-translate" class="btn-primary">🌐 번역 시작</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div id="edit-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3>제목 수정</h3>
+            <div class="input-container">
+                <label>제목</label>
+                <input type="text" id="edit-title-input" maxlength="256">
+                <span id="char-count">0 / 256</span>
+            </div>
+            <div class="input-container compact-tag-editor">
+                <label>내 태그</label>
+                <input type="text" id="edit-tags-input" maxlength="320" placeholder="쉼표로 구분">
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-edit" class="btn-secondary">취소</button>
+                <button id="save-edit" class="btn-primary">저장</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Retry Research Modal -->
+    <div id="retry-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3>조사 재시도</h3>
+            <div class="research-modal-scroll">
+                <p id="retry-target-text" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 15px;"></p>
+                <div class="input-container">
+                    <label>엔진 프리셋</label>
+                    <select id="retry-engine-preset-select" class="glass-select"></select>
+                </div>
+                <div class="input-container">
+                    <label>조사 강도</label>
+                    <select id="retry-intensity" class="glass-select">
+                        <option value="low">낮음</option>
+                        <option value="medium">보통</option>
+                        <option value="high">높음</option>
+                    </select>
+                </div>
+                <div class="input-container">
+                    <label>검증 반복</label>
+                    <select id="retry-quality-iterations" class="glass-select">
+                        <option value="1">1회 (재조사 없음)</option>
+                        <option value="2">최대 2회</option>
+                        <option value="3">최대 3회</option>
+                        <option value="5">최대 5회</option>
+                        <option value="10">최대 10회</option>
+                        <option value="15">최대 15회 (실험)</option>
+                    </select>
+                </div>
+                <div class="input-container">
+                    <label>검증 깊이</label>
+                    <select id="retry-quality-depth" class="glass-select">
+                        <option value="light">가벼움</option>
+                        <option value="standard">표준</option>
+                        <option value="strict">엄격</option>
+                    </select>
+                </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="retry-derive-task" checked>
+                    <span>새 재시도 작업으로 만들기</span>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-retry" class="btn-secondary">취소</button>
+                <button id="start-retry" class="btn-primary">재시도 시작</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Research Modal -->
+    <div id="research-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3 id="research-modal-title">AI 심층 조사 설정</h3>
+            <div class="research-modal-scroll">
+                <div id="topic-input-container" class="input-container hidden">
+                    <label>조사 주제</label>
+                    <input type="text" id="research-topic" placeholder="예: WebGPU 도입 현황, 유럽 AI 규제 변화, 팀 워크플로 도구 후보 비교">
+                </div>
+                <p id="research-target-text" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 15px;"></p>
+
+                <div class="input-container">
+                    <div class="preset-field-header">
+                        <label>엔진 프리셋</label>
+                        <button id="open-preset-settings" class="preset-settings-button" type="button">관리</button>
+                    </div>
+                    <div class="preset-select-row">
+                        <select id="research-engine-preset-select" class="glass-select"></select>
+                        <span id="research-preset-status" class="preset-status-badge status-unverified">미확인</span>
+                    </div>
+                    <select id="research-model-select" class="glass-select legacy-research-model hidden"></select>
+                </div>
+
+                <div class="input-container">
+                    <label>조사 강도</label>
+                    <select id="research-intensity" class="glass-select">
+                        <option value="low">낮음</option>
+                        <option value="medium" selected>보통</option>
+                        <option value="high">높음</option>
+                    </select>
+                </div>
+
+                <div class="input-container">
+                    <label>보고서 형식</label>
+                    <select id="research-format" class="glass-select">
+                        <option value="md">📄 마크다운 (기본 텍스트)</option>
+                        <option value="html">✨ 인터랙티브 HTML (차트/다이어그램 포함)</option>
+                    </select>
+                </div>
+
+                <div class="input-container">
+                    <label>조사 모드</label>
+                    <select id="research-mode" class="glass-select">
+                        <option value="general" selected>🧭 일반 조사</option>
+                        <option value="local">📍 로컬/장소 탐색</option>
+                        <option value="historical">🏛 역사 조사</option>
+                        <option value="technology_concept">💡 기술 개념</option>
+                        <option value="technology_implementation">🛠 기술 구현</option>
+                        <option value="science">🔬 과학/연구</option>
+                        <option value="business">💼 비즈니스/시장</option>
+                        <option value="policy">⚖️ 정책/규제</option>
+                        <option value="culture">📚 문화/사회</option>
+                        <option value="music">🎵 음악/아티스트</option>
+                    </select>
+                </div>
+
+                <div class="input-container">
+                    <label>검증 반복</label>
+                    <select id="research-quality-iterations" class="glass-select">
+                        <option value="1">1회 (재조사 없음)</option>
+                        <option value="2" selected>최대 2회</option>
+                        <option value="3">최대 3회</option>
+                        <option value="5">최대 5회</option>
+                        <option value="10">최대 10회</option>
+                        <option value="15">최대 15회 (실험)</option>
+                    </select>
+                </div>
+
+                <div class="input-container">
+                    <label>검증 깊이</label>
+                    <select id="research-quality-depth" class="glass-select">
+                        <option value="light">가벼움</option>
+                        <option value="standard" selected>표준</option>
+                        <option value="strict">엄격</option>
+                    </select>
+                </div>
+
+                <div class="input-container">
+                    <label>조사 조건/제약/비교 기준 (선택)</label>
+                    <textarea id="research-instruction" placeholder="예: 비교 대상, 제외 조건, 예산/기간/지역, 검증할 주장, 후보별 장단점과 불확실성" rows="3"></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-research" class="btn-secondary">취소</button>
+                <button id="start-research" class="btn-primary">조사 시작</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Engine Preset Settings Modal -->
+    <div id="preset-modal" class="modal-overlay hidden">
+        <div class="modal-content glass preset-modal-content">
+            <h3>엔진 프리셋 설정</h3>
+            <p class="preset-modal-description">조사 실행 엔진을 확인하고, 내장 프리셋을 복사해 사용자 프리셋을 만들거나 수정합니다.</p>
+            <div class="preset-settings-grid">
+                <div class="input-container preset-wide">
+                    <label>프리셋</label>
+                    <select id="preset-editor-select" class="glass-select"></select>
+                    <p class="field-help">내장 프리셋은 코드에 고정되어 있습니다. 사용자 프리셋은 내장 프리셋을 복사해 만들고 수정하거나 삭제할 수 있습니다.</p>
+                </div>
+                <div id="preset-detail-list" class="preset-detail-list preset-wide"></div>
+                <div id="preset-create-panel" class="preset-create-panel preset-wide hidden">
+                    <div class="input-container">
+                        <label id="preset-form-name-label">새 프리셋 이름</label>
+                        <input type="text" id="preset-new-name-input" maxlength="120" placeholder="예: 내 Gemini 조사">
+                    </div>
+                    <div class="input-container" id="preset-template-container">
+                        <label>기준 내장 프리셋</label>
+                        <input type="text" id="preset-template-name-input" readonly>
+                        <p class="field-help">제공자, 명령, 기본 강도, 웹검색, fallback 값은 기준 프리셋을 따릅니다.</p>
+                    </div>
+                    <div class="input-container" id="preset-new-model-container">
+                        <label>모델 이름</label>
+                        <select id="preset-new-model-select" class="glass-select"></select>
+                        <p class="field-help" id="preset-new-model-help">Pi/Ollama 계열 프리셋에서만 Ollama 모델을 선택합니다. CLI 프리셋은 명령 기반으로 실행됩니다.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="preset-test-row">
+                <span id="preset-test-status" class="preset-status-badge status-unverified">미확인</span>
+                <span id="preset-test-message"></span>
+            </div>
+            <div class="modal-actions">
+                <button id="new-preset-btn" class="btn-secondary" type="button">새 프리셋</button>
+                <button id="edit-preset-btn" class="btn-secondary hidden" type="button">프리셋 수정</button>
+                <button id="delete-preset-btn" class="btn-secondary danger-action hidden" type="button">프리셋 삭제</button>
+                <button id="cancel-new-preset" class="btn-secondary hidden" type="button">생성 취소</button>
+                <button id="test-preset-btn" class="btn-secondary" type="button">연결 테스트</button>
+                <button id="save-preset" class="btn-primary hidden" type="button">프리셋 생성</button>
+                <button id="cancel-preset" class="btn-secondary" type="button">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Research Request Modal -->
+    <div id="research-request-modal" class="modal-overlay hidden">
+        <div class="modal-content glass research-request-modal-content">
+            <h3>조사 요청 내용</h3>
+            <div class="research-request-title-row">
+                <p id="research-request-document-title" class="research-request-document-title"></p>
+                <button id="copy-research-request-title" class="research-request-copy-btn" type="button">복사</button>
+            </div>
+            <div id="research-request-meta" class="research-request-meta"></div>
+            <div id="research-request-topic-section" class="research-request-section hidden">
+                <label>조사 주제</label>
+                <p id="research-request-topic"></p>
+            </div>
+            <div id="research-request-instructions-section" class="research-request-section hidden">
+                <label>조사 조건/제약/비교 기준</label>
+                <pre id="research-request-instructions"></pre>
+            </div>
+            <div id="research-request-sources-section" class="research-request-section hidden">
+                <label>문서 연결</label>
+                <ul id="research-request-sources"></ul>
+            </div>
+            <details id="research-request-prompt-section" class="research-request-section research-request-prompt-section hidden">
+                <summary>실행 요청 프롬프트</summary>
+                <pre id="research-request-prompt"></pre>
+            </details>
+            <div id="research-request-failure-section" class="research-request-section hidden">
+                <label>신뢰도/검증 결격 사유</label>
+                <pre id="research-request-failure"></pre>
+            </div>
+            <div class="modal-actions">
+                <button id="close-research-request" class="btn-primary">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Task Error Modal -->
+    <div id="error-modal" class="modal-overlay hidden">
+        <div class="modal-content glass">
+            <h3>작업 실패 상세 원인</h3>
+            <div class="error-log-container">
+                <pre id="error-message-text"></pre>
+            </div>
+            <div class="modal-actions">
+                <button id="close-error" class="btn-primary">확인</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Action Sheet -->
+    <div id="mobile-action-sheet" class="modal-overlay hidden">
+        <div class="action-sheet-content glass">
+            <div class="action-sheet-header">
+                <span id="action-sheet-title">파일 작업</span>
+                <button id="close-action-sheet" class="close-btn">✕</button>
+            </div>
+            <div class="action-sheet-items">
+                <div class="action-sheet-item research-btn-mobile" id="mobile-action-research">
+                    <span class="action-icon">🔍</span>
+                    <span class="action-label">심층 조사</span>
+                </div>
+                <div class="action-sheet-item research-btn-mobile" id="mobile-action-follow-up">
+                    <span class="action-icon">↪</span>
+                    <span class="action-label">후속 조사</span>
+                </div>
+                <div class="action-sheet-item translate-btn-mobile" id="mobile-action-translate">
+                    <span class="action-icon">🌐</span>
+                    <span class="action-label">번역</span>
+                </div>
+                <div class="action-sheet-item edit-btn-mobile" id="mobile-action-edit">
+                    <span class="action-icon">✎</span>
+                    <span class="action-label">수정</span>
+                </div>
+            </div>
+            <div id="drawer-action-panel" class="drawer-action-panel hidden">
+                <select id="action-drawer-select" class="glass-select"></select>
+                <div class="drawer-action-row">
+                    <button id="mobile-action-assign-drawer" class="btn-primary">Assign</button>
+                    <button id="mobile-action-clear-drawer" class="btn-secondary">Remove</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
