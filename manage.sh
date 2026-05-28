@@ -64,7 +64,11 @@ start() {
     fi
 
     append_log "starting target/debug/$APP_NAME"
-    RUST_BACKTRACE="${RUST_BACKTRACE:-1}" nohup "target/debug/$APP_NAME" >> "$LOG_FILE" 2>&1 &
+    if command -v setsid >/dev/null 2>&1; then
+        RUST_BACKTRACE="${RUST_BACKTRACE:-1}" setsid nohup "target/debug/$APP_NAME" >> "$LOG_FILE" 2>&1 &
+    else
+        RUST_BACKTRACE="${RUST_BACKTRACE:-1}" nohup "target/debug/$APP_NAME" >> "$LOG_FILE" 2>&1 &
+    fi
 
     NEW_PID=$!
     echo "$NEW_PID" > "$PID_FILE"

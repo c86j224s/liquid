@@ -9,6 +9,8 @@ Use [workflow.md](./workflow.md) as the operational playbook when a future reque
 The Narrative State improvement pass is part of the benchmark history, but its detailed phase artifacts are intentionally not included in this sanitized snapshot.
 Only the derived benchmark summaries, CSV score tables, and reviewed sanitized `*-final-output.md` artifacts are committed here.
 
+Reader Quality is now an additive hidden artifact layer inside the existing controller envelope. It can persist compact `argument_graph`, `narrative_plan`, `section_briefs`, and `reader_critique` planning artifacts for replay and benchmark analysis, but those fields stay non-evidentiary and are stripped from commit-safe final-output markdown together with the rest of `[RESEARCH_ARTIFACT_JSON]`.
+
 For repeatable improvement passes, use [improvement-run.sh](./improvement-run.sh). It runs `research_bench` with the standard strict settings and, when `--preserve-dir` is provided, copies only commit-safe CSV and sanitized final-output artifacts while leaving aggregate markdown, raw diagnostics, prompts, and machine-readable artifact JSON in the raw run directory.
 
 ## Current Checkpoint
@@ -21,6 +23,7 @@ For repeatable improvement passes, use [improvement-run.sh](./improvement-run.sh
 - Repair search hints are transient leads only; hint URLs stay untrusted until normal adoption or independent fetch, and the final output should not echo repair-hint labels.
 - Provider diversification and context/window tuning remain deferred follow-up work, and broader live pilots should stay cautious despite the bounded gate pass.
 - Historical report structure was strengthened in the server-side `historical` research lens after the Aurelian source-reliability sample remained too thin. The follow-up live run `history-server-integration-aurelian-live-20260517T000000Z` improved final-output length and `genre_section_richness` (`1` to `4` versus the previous ad-hoc run), but still had one historical overlay critical flag for missing consequence signals. Treat this as an incremental product improvement, not a benchmark-clean pass.
+- 2026-05-28 live API smoke tests for broad historical topics, including `러일전쟁`, still completed as `untrusted` even after the hidden planning-artifact and phase-dossier gates were added. The useful regression signal was that the model could produce Source Cards, Claim Log rows, and multiple visible event cards while still leaving grounded per-card `causal_spine` and `interpretive_layers` empty, so these runs are negative evidence for narrative-depth success. The raw task outputs, diagnostics, and controller artifacts remain local-only under the operator data directory; this snapshot records only the engineering lesson.
 
 ## Search Providers
 
@@ -45,6 +48,8 @@ BRAVE_SEARCH_API_KEY=...
 ```
 
 If no configured provider list resolves to a usable provider, the runtime falls back to the existing single-provider selector and then to DuckDuckGo. API keys are sent only as request headers and are not written into source diagnostics.
+
+Live discovery HTTP requests default to an 8-second timeout. For slow providers or regional networks, set `LIQUID_RESEARCH_SOURCE_HTTP_TIMEOUT_SECS` to a positive number of seconds; invalid values are ignored and values above 60 seconds are clamped to 60.
 
 Source-pack status remains compatibility-stable and should be read like this in live mode:
 
@@ -79,7 +84,7 @@ Each run can write the following local artifacts:
 
 - `runs/<label>.md`: human-readable summary generated from the structured data
 - `runs/<label>.json`: authoritative machine-readable run aggregate with per-case scorecards; replay cases also include additive `replay_before` state
-- `runs/<label>.csv`: one row per case with overall score, status visibility, the 9 rubric dimensions, and additive replay-before columns when applicable
+- `runs/<label>.csv`: one row per case with overall score, status visibility, the 9 rubric dimensions, additive replay-before columns when applicable, and additive reader-quality metric columns appended at the end
 - `runs/<label>.ndjson`: one row per case-dimension score for graphing or notebook analysis, plus additive replay-before state when applicable
 - `runs/<label>/<case>.json`: per-case summary with links to raw artifacts plus the embedded structured scorecard
 

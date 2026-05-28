@@ -69,31 +69,52 @@ sanitize_final_output() {
   local source="$1"
   local target="$2"
 
-  awk '
-    /^\[RESEARCH_ARTIFACT_JSON\][[:space:]]*$/ {
-      dropping = 1
-      fence_count = 0
-      next
-    }
-    dropping {
-      if ($0 ~ /^```/) {
-        fence_count++
-        if (fence_count >= 2) {
-          dropping = 0
-        }
-      }
-      next
-    }
-    { print }
+  perl -0pe '
+    s{
+      \[RESEARCH_ARTIFACT_JSON\][ \t]*\r?\n
+      ```json
+      .*?
+      \r?\n```
+      [ \t]*(?:\r?\n)?
+    }{}gmsx;
+    s{
+      <script\b
+      (?=[^>]*\sdata-research-artifacts(?:[\s=>\/]|$))
+      [^>]*>
+      .*?
+      </script>
+      [ \t]*(?:\r?\n)?
+    }{}gmsix;
   ' "$source" > "$target"
 }
 
 assert_preserved_final_output_is_sanitized() {
   local path="$1"
-  if grep -Eq '\[RESEARCH_ARTIFACT_JSON\]|"source_cards"|"claim_log"|"research_debt"|"diagnostics_ref"|resolved-system-prompt|source-diagnostics|controller-artifacts' "$path"; then
+  local artifact_key='(reader_quality|source_cards|claim_log|conflict_map|research_debt|quality_gate|narrative_state|event_cards|diagnostics_ref|source_diagnostics|controller_artifacts|provider_payload|resolved_system_prompt|resolved_user_prompt)'
+  local quote='("|\&quot;|\&#0*34;|\&#x0*22;)'
+  local marker_pattern="\\[RESEARCH_ARTIFACT_JSON\\]|data-research-artifacts|${quote}${artifact_key}${quote}|resolved-system-prompt|resolved-user-prompt|resolved prompt|raw diagnostics|source[- ]diagnostics|controller artifact json|controller-artifacts|provider payload|response body:"
+  local decoded
+  decoded="$(mktemp)"
+  if ! python3 - "$path" "$decoded" <<'PY'
+import html
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[2])
+target.write_text(html.unescape(source.read_text(encoding="utf-8")), encoding="utf-8")
+PY
+  then
+    rm -f "$decoded"
+    echo "Unable to canonicalize preserved final output before sanitization check: $path" >&2
+    exit 1
+  fi
+  if grep -Eqi "$marker_pattern" "$path" || grep -Eqi "$marker_pattern" "$decoded"; then
+    rm -f "$decoded"
     echo "Preserved final output still contains raw artifact markers: $path" >&2
     exit 1
   fi
+  rm -f "$decoded"
 }
 
 while [[ $# -gt 0 ]]; do

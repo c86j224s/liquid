@@ -68,7 +68,7 @@ pub(crate) fn research_controller_contract_prompt(format: &str) -> String {
 - Markdown verification appendices must include one machine-readable artifact block labeled '[RESEARCH_ARTIFACT_JSON]' followed by a ```json fenced block."
     };
     format!(
-        "[RESEARCH CONTROLLER CONTRACT v21]\n\
+        "[RESEARCH CONTROLLER CONTRACT v22]\n\
 - Treat research as a stateful quality loop, not a one-pass summary.\n\
 - Build auditable Source Cards before finalizing: ID, URL, title, source class, extracted facts, limitation.\n\
 - Convert Source Cards into a Claim Log: stable ID, claim, claim_type, support_source_card_ids or support_urls, confidence.\n\
@@ -80,16 +80,29 @@ pub(crate) fn research_controller_contract_prompt(format: &str) -> String {
 - A row labeled resolved_with_caveat is NOT resolved. Keep the conflict visible, set promoted_to_debt=true, and add matching open research_debt until stronger evidence closes it.\n\
 - Add an Ambiguity Check when entity identity, dates, prices, model names, places, or user intent are underspecified.\n\
 - Run a Quality Gate before the final answer. Check unsupported named entities/dates/prices/places/models/people, evidence that does not match the expected source reliability level, missing official/current sources, single weak-source conclusions, and final claims that exceed source strength.\n\
-- In the final verification appendix, emit a compact machine-readable artifact object with keys: source_cards, claim_log, conflict_map, research_debt, narrative_state, quality_gate. Each source_cards row must include title as well as ID and URL. Do not include raw transcripts, long scratchpads, or repeated controller/event logs in the artifact JSON.\n\
+- In the final verification appendix, emit a compact machine-readable artifact object with keys: source_cards, claim_log, conflict_map, research_debt, narrative_state, reader_quality, quality_gate. Each source_cards row must include title as well as ID and URL. Do not include raw transcripts, long scratchpads, repeated controller/event logs, raw diagnostics, provider payloads, or resolved controller/prompt JSON in the artifact JSON.\n\
 - narrative_state is optional outline continuity data for historical, policy, comparative, and long-form explanatory research. It may include topic_frame, working_thesis, reader_promise, event_cards, timeline, actors, causal_chain, evidence_layers, interpretive_tensions, impacts, reader_questions, section_outline, transition_plan, open_gaps, and last_iteration_summary.\n\
+- reader_quality is optional reader-planning data only. It may include argument_graph, narrative_plan, section_briefs, and reader_critique. Prefer references to claim_log IDs and source_card IDs instead of duplicating long evidence prose.\n\
 - narrative_state is NOT evidence. It cannot satisfy Source Card support, Claim Log support, URL counts, authoritative-source counts, or conflict/debt resolution by itself.\n\
+- reader_quality is NOT evidence. It cannot satisfy Source Card support, Claim Log support, URL counts, authoritative-source counts, conflict/debt resolution, or quality-gate passage by itself.\n\
 - event_cards, if present, are an internal phase scaffold for historical event/process explanation only. They are not evidence and cannot justify factual claims without Claim Log or Source Card support.\n\
-- In high-intensity strict historical event/process research, use a phase-card map-reduce workflow before composing the Final Answer: decompose the topic into chronological phases, build event_cards for each phase, merge and order those cards, fill missing cause/effect bridges, then write the reader-facing narrative from the cards.\n\
+- reader_critique metrics should be concise reader-facing gates such as clarity, sequencing, coverage, or unresolved-reader-risk. Keep them compact and sanitized, not as raw model diagnostics.\n\
+- In high-intensity strict historical research, narrative-depth artifacts are REQUIRED, not decorative: keep narrative_state compact but non-empty with working_thesis, event_cards, at least 3 causal_chain links, at least 2 evidence_layers, at least 1 interpretive_tension, at least 2 impacts, at least 1 reader_question, and at least 3 section_outline entries. Each planning item must cite expected_claim_log_ids/source_card_ids already present in the artifact; event-card and section grounding depends on concrete Claim Log claim text, not Source Card titles/extracted_facts alone.\n\
+- In high-intensity strict historical research, reader_quality should carry a compact narrative_plan with narrative_arc plus section_briefs and reader_critique, or a compact argument_graph. Use these to check whether the report has a reader-facing judgment frame; keep them concise and hidden in the artifact, not copied into the visible report.\n\
+- Keep the machine artifact under the parser budget: do not put long prose, raw diagnostics, repeated event logs, provider payloads, or full appendix text in JSON. For narrative_state, prefer short but concrete 1-2 sentence fields tied to Claim Log IDs over verbose paragraphs.\n\
+- In high-intensity strict historical event/process research, use a phase-card map-reduce workflow before composing the Final Answer: decompose the topic into chronological phases, build event_cards for each phase, merge and order those cards, fill missing cause/effect bridges in causal_chain, then write the reader-facing narrative from the cards.\n\
 - Across repair iterations, preserve and deepen an existing phase scaffold unless stronger evidence reorganizes it; do not collapse a broad historical event/process back into fewer thinner cards just to make the draft shorter.\n\
-- For broad historical wars, revolutions, sieges, or long processes, provide roughly 10-14 event_cards when the evidence permits, with at least 6 distinct cards for any broad multi-phase topic. Each event_card must include label, timeframe, actors, region_or_front, trigger, development, outcome, source_ids, confidence, and any open_questions. If evidence is too thin for a card, keep that gap explicit as research_debt instead of omitting the phase.\n\
-- Each historical event_card development should be 2-3 concrete sentences when possible: name the decision or movement, the actors or institutions that drove it, the place/front where it unfolded, the constraint or conflict inside the phase, and the consequence that handed off to the next phase.\n\
-- The visible Final Answer must expand the accepted event_cards into prose. Each major phase should get paragraph-level development, not only a list item or one-sentence summary, and broad reports should group the cards into readable macro-sections while still preserving the concrete phase sequence. Each phase must explain why it started, who acted, where it unfolded, what changed, and how it handed off to the next phase.\n\
+- For broad historical wars, revolutions, sieges, or long processes, provide roughly 8-12 event_cards when the evidence permits, with at least 6 distinct cards for any broad multi-phase topic. Each event_card must include label, timeframe, actors, region_or_front, trigger, development, outcome, claim_log_ids, source_ids, confidence, and any open_questions. The card must show both its role in the central spine and enough internal multi-layer analysis to be worth reading: actor interests, diplomatic/military/economic/geographic/political/source-interpretation layers, constraints, and how the outcome pressures the next phase. If evidence is too thin for a card, keep that gap explicit as research_debt instead of omitting the phase. Do not attach broad whole-war claims to a concrete phase card, and do not mint fresh Source Card extracted_facts merely to pass narrative grounding.\n\
+- Before writing event_cards for a broad historical process, build or preserve one supported phase-specific Claim Log row for each major phase you intend to use. The claim sentence itself must name the timeframe, place/front, actors, trigger or development, and outcome; a generic whole-war cause/result claim cannot ground a concrete phase card. If you cannot support such a phase claim from Source Cards or support URLs, make that phase a specific research_debt item instead of attaching an unrelated broad claim.\n\
+- For Korean reports, write narrative_state event_cards, causal_chain, and reader_quality planning fields in Korean, using the same concrete nouns and date/place/actor terms as the Korean Claim Log rows they cite. Do not ground Korean claims with English-only phase cards; cross-language paraphrases are not enough for strict historical grounding.\n\
+- Event_cards that you expect the strict gates or finalizer to trust must carry direct claim_log_ids that resolve to supported Claim Log rows for that phase. source_ids are supplemental context only; Source Card overlap by itself does not authorize reader-facing phase prose. Do not leave claim_log_ids/source_ids blank on a reader-facing phase card; unsupported phases belong in research_debt, not in trusted event_cards.\n\
+- Keep hidden historical event_card.development compact but substantive: normally 1-2 concrete evidence-linked sentences, about 90+ Korean characters when the phase is broad, naming the movement/decision, actors, front/place, constraint, and handoff consequence. Each broad phase should naturally include at least two layers such as diplomacy, military operations, logistics/economics, geography/front conditions, domestic politics, or source/interpretive limits. Use causal_spine and interpretive_layers to show why the phase matters for the central interpretive spine and what secondary layer it reveals. Put the fuller 3-5 sentence phase expansion in the visible Final Answer, not inside artifact JSON.\n\
+- For broad historical event_cards, use nested causal_spine and interpretive_layers when possible. Each nested item should carry epistemic_status (fact, interpretation, inference, hypothesis, contested, or limit), reasoning, limits when relevant, plus claim_log_ids/source_ids. Do not force every valuable sentence to be a fact claim: facts are evidence anchors; interpretations explain what those anchors mean; inference may go one step beyond only when the inference direction and reasoning chain are explicit and logically follows from the cited anchors. Reject leaps that skip causal steps, contradict the cited anchors, or hide the limits.\n\
+- The visible Final Answer must expand the accepted event_cards into prose. Each major phase should get paragraph-level development, not only a list item or one-sentence summary, and broad reports should group the cards into readable macro-sections while still preserving the concrete phase sequence and the internal motion of each card. Each phase must explain why it started, who acted, where it unfolded, what changed, and how it handed off to the next phase.\n\
+- For Hannibal / Second Punic War-class campaign histories, preserve a visibly phased campaign spine instead of flattening the answer into a short significance summary: keep multiple phase subsections, repeated date anchors, and repeated protagonist/opponent/front anchors so the reader can scan the campaign sequence.\n\
+- In high-intensity strict historical research, the visible Final Answer must expose explicit richness markers for at least several of these axes: comparison, chronology-vs-interpretation separation, source/evidence layers, issue-map or debate framing, later impact, and follow-up questions. Use visible headings or unmistakable paragraph labels so the reader can scan them.\n\
 - evidence_layers are only a plan for how to present evidence-backed explanation. interpretive_tensions, impacts, and reader_questions must still be grounded in Source Cards or Claim Log, or remain visible as uncertainty/open gaps/research debt.\n\
+- Open historical research_debt must name the exact missing phase, actor, place/front, transition, source layer, or interpretive gap. Do not leave generic placeholders such as 'missing evidence not specified'.\n\
 - In the visible verification appendix, you MUST include visible sections named 'Source Cards', 'Claim Log' or '주장 로그 (Claim Log)', and 'Quality Gate' or '품질 게이트 (Quality Gate)' before the machine-readable artifact block. Do not rely on hidden JSON keys to satisfy these visible sections.\n\
 - The runtime will deterministically rebuild or repair visible verification sections from persisted artifacts before final save, and may use narrative_state only to repair chronology, transitions, and reader-facing structure without exposing internal labels. Keep the visible appendix consistent with the Source Cards, Claim Log, conflicts, debt, and Quality Gate you emit.\n\
 - Include a 0-5 Score section, but do not let self-scoring override critical failure flags.\n\
@@ -98,7 +111,7 @@ pub(crate) fn research_controller_contract_prompt(format: &str) -> String {
 - Final Answer must be natural Korean, direct first, specific, and separate facts, uncertainty, and recommendation. It must read as a finished report, not as a validation transcript.\n\
 - In high-intensity strict research, the visible Final Answer itself must clear the validator minimums: at least 450 substantive characters, at least 4 sentences, and at least 3 substantial explanation angles covering the situation, the reasoning behind it, and the practical limits or implications for the reader.\n\
 - Do not interleave verification notes, repair notes, source-audit rows, source cards, claim logs, self-scores, or quality gate details into the main narrative. Treat them like footnotes/endnotes: one final verification appendix after the complete reader-facing answer.\n\
-- Do not copy XML-like prompt blocks, the field name narrative_state, validator labels, repair metadata, or internal gap IDs into reader-facing output.\n\
+- Do not copy XML-like prompt blocks, the field names narrative_state or reader_quality, validator labels, repair metadata, or internal gap IDs into reader-facing output.\n\
 - Never include sections named Source Audit, 출처 감사, Source Cards, Claim Log, 주장 로그, Quality Gate, 품질 게이트, Resolution Check, Ambiguity Check, Conflict Map, or 품질 점수 before the main answer is complete.\n\
 {format_note}"
     )
@@ -177,7 +190,7 @@ pub(crate) fn research_mode_lens(mode: &str) -> &'static str {
             "- 정책/규제 렌즈: 제도 배경, 이해관계자, 규제/법적 쟁점, 리스크, 집행 가능성과 한계를 정보 보고서로 정리한다. 법률 조언처럼 쓰지 않는다."
         }
         "historical" => {
-            "- 역사 조사 렌즈: 사건이나 인물의 전개 순서, 핵심 행위자, 지리적 범위, 원인이 어떻게 다음 전개를 낳았는지 보이는 인과 사슬, 직접적 결과와 장기적 영향, 그 변화가 왜 중요했는지, 사료의 한계, 해석이 갈리는 지점, 이번 설명의 범위를 함께 정리한다. 역사 주제의 reader-facing 본문에는 전개 순서, 인과 구조, 사료 층위, 쟁점 지도, 후대 영향, 후속 탐색 질문을 소제목이나 분명한 문단 축으로 드러낸다. 전쟁·반란·조약사처럼 전개형 사건을 다룰 때는 significance를 서둘러 요약하기 전에 단계별 국면, 핵심 행위자와 전선/지역, 종결 합의·조약·정착 결과, 원인이 어떻게 다음 국면과 결과를 낳았는지를 먼저 재구성한다. 본문에서 확인된 사실과 해석을 분리하고, 동시대 비교나 대안 해석이 의미 있는 경우 함께 제시한다. 약한 고대 사료나 문제 많은 후기 전승은 보조적·논쟁적 맥락으로만 다루고, 더 강한 사료나 현대 연구의 교차 확인 없이 단정적 결론의 주축으로 삼지 않는다."
+            "- 역사 조사 렌즈: 사건이나 인물의 전개 순서, 핵심 행위자, 지리적 범위, 원인이 어떻게 다음 전개를 낳았는지 보이는 인과 사슬, 직접적 결과와 장기적 영향, 그 변화가 왜 중요했는지, 사료의 한계, 해석이 갈리는 지점, 이번 설명의 범위를 함께 정리한다. 역사 주제의 reader-facing 본문에는 먼저 한 문장 이상의 중심 해석 줄기(central interpretive spine)를 세운다: 이 사건을 움직인 핵심 긴장, 왜 충돌·전환이 불가피해졌는지, 각 국면이 다음 국면을 어떻게 강제했는지, 결론이 어떤 조건에서 달라지는지를 설명한 뒤 사실을 그 줄기 위에 배치한다. 사건·전개 카드는 얇은 연표 항목이 아니라 그 spine을 입체화하는 장면 단위 분석이어야 하며, 각 카드에는 행위자별 이해관계, 장소·전선, 외교·군사·경제·지리 같은 층위, 선택지를 좁힌 제약, 결과가 다음 국면에 준 압력, 사료·해석상 한계를 포함한다. 역사 주제의 reader-facing 본문에는 전개 순서, 인과 구조, 사료 층위, 쟁점 지도, 후대 영향, 후속 탐색 질문을 소제목이나 분명한 문단 축으로 드러낸다. 가능하면 동시대 비교와 '연대기적 전개' 대 '후대 해석'의 구분도 명시한다. 전쟁·반란·조약사처럼 전개형 사건을 다룰 때는 significance를 서둘러 요약하기 전에 단계별 국면, 핵심 행위자와 전선/지역, 종결 합의·조약·정착 결과, 원인이 어떻게 다음 국면과 결과를 낳았는지를 먼저 재구성한다. 특히 한니발/제2차 포에니 전쟁 같은 장기 원정형 전쟁사는 visible 본문에서 다단계 국면 소제목, 반복되는 연대 표지, 한니발/로마/카르타고 같은 주체·전선 앵커를 유지해 평평한 요약문으로 붕괴하지 않게 한다. 본문에서 확인된 사실과 해석을 분리하고, 동시대 비교나 대안 해석이 의미 있는 경우 함께 제시한다. 약한 고대 사료나 문제 많은 후기 전승은 보조적·논쟁적 맥락으로만 다루고, 더 강한 사료나 현대 연구의 교차 확인 없이 단정적 결론의 주축으로 삼지 않는다. 고강도 엄격 모드에서는 hidden narrative_state/reader_quality에도 working_thesis 또는 narrative_arc, 최소 3개의 cause/effect causal_chain, evidence_layers, interpretive_tensions, impacts, reader_questions, section planning, critique를 남기고, 각 항목은 이미 존재하는 Claim Log/Source Card ID에 연결한다. 열려 있는 역사적 공백은 generic debt가 아니라 어떤 국면·행위자·장소·해석층이 비는지 구체적으로 적는다."
         }
         "culture" => {
             "- 문화/사회 렌즈: 역사적 배경, 사회적 맥락, 담론의 변화, 문화적 영향, 수용자/공동체 반응을 조사한다."
@@ -632,13 +645,24 @@ mod tests {
     fn test_research_system_prompt_includes_controller_contract() {
         let prompt = build_research_system_prompt("general", "md");
 
-        assert!(prompt.contains("[RESEARCH CONTROLLER CONTRACT v21]"));
+        assert!(prompt.contains("[RESEARCH CONTROLLER CONTRACT v22]"));
         assert!(prompt.contains("Source Cards"));
         assert!(prompt.contains("Claim Log"));
         assert!(prompt.contains("Quality Gate"));
         assert!(prompt.contains("narrative_state"));
+        assert!(prompt.contains("reader_quality"));
+        assert!(prompt.contains("argument_graph"));
+        assert!(prompt.contains("section_briefs"));
+        assert!(prompt.contains("reader_critique"));
         assert!(prompt.contains("event_cards"));
+        assert!(prompt.contains("claim_log_ids"));
         assert!(prompt.contains("preserve and deepen an existing phase scaffold"));
+        assert!(prompt.contains("narrative-depth artifacts are REQUIRED"));
+        assert!(prompt.contains("at least 3 causal_chain links"));
+        assert!(prompt.contains("Hannibal / Second Punic War-class campaign histories"));
+        assert!(prompt.contains("Source Card overlap by itself does not authorize"));
+        assert!(prompt.contains("comparison, chronology-vs-interpretation separation"));
+        assert!(prompt.contains("missing evidence not specified"));
         assert!(prompt.contains("you MUST include visible sections"));
         assert!(prompt.contains("Do not rely on hidden JSON keys"));
         assert!(prompt.contains("NO CONFIDENCE"));
@@ -653,6 +677,7 @@ mod tests {
         assert!(prompt.contains("## 핵심 결론"));
         assert!(prompt.contains("at least 450 substantive characters"));
         assert!(prompt.contains("clear sequence/background"));
+        assert!(prompt.contains("raw diagnostics"));
         assert!(
             prompt.contains("evidence that does not match the expected source reliability level")
         );
@@ -685,6 +710,13 @@ mod tests {
         assert!(prompt.contains("종결 합의·조약·정착 결과"));
         assert!(prompt.contains("보조적·논쟁적 맥락"));
         assert!(prompt.contains("단정적 결론의 주축으로 삼지 않는다"));
+        assert!(prompt.contains("연대기적 전개"));
+        assert!(prompt.contains("후대 해석"));
+        assert!(prompt.contains("hidden narrative_state/reader_quality"));
+        assert!(prompt.contains("generic debt"));
+        assert!(prompt.contains("한니발/제2차 포에니 전쟁"));
+        assert!(prompt.contains("다단계 국면 소제목"));
+        assert!(prompt.contains("평평한 요약문으로 붕괴하지 않게"));
     }
 
     #[test]

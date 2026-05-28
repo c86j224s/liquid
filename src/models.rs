@@ -1,6 +1,17 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const PI_LOCAL_SOURCE_PACK_SOURCE_CARD_SCAFFOLD_WARNING: &str =
+    "pi_local_source_pack_provenance_source_cards_scaffolded";
+pub(crate) const PI_LOCAL_SOURCE_PACK_CLAIM_LOG_REPAIR_WARNING: &str =
+    "pi_local_source_pack_claim_log_repaired_from_visible_output";
+pub(crate) const PI_LOCAL_SOURCE_PACK_SOURCE_CARD_SCAFFOLD_DIAGNOSTICS_REF: &str =
+    "internal:pi_local_source_pack_scaffold";
+pub(crate) const PI_LOCAL_SOURCE_PACK_SCAFFOLD_EXTRACTED_FACT: &str =
+    "pre-collected source-pack provenance only";
+pub(crate) const PI_LOCAL_SOURCE_PACK_SCAFFOLD_LIMITATION: &str =
+    "provenance only; no model-emitted claim linkage was available";
+
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub(crate) struct FileMetadata {
     pub(crate) id: i64,
@@ -269,6 +280,112 @@ pub(crate) struct ResearchQualityGateArtifact {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderArgumentNode {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) node_type: Option<String>,
+    pub(crate) rationale: Option<String>,
+    #[serde(default)]
+    pub(crate) claim_log_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) source_card_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderArgumentEdge {
+    pub(crate) id: String,
+    pub(crate) from_node_id: String,
+    pub(crate) to_node_id: String,
+    pub(crate) relation: String,
+    pub(crate) rationale: Option<String>,
+    #[serde(default)]
+    pub(crate) claim_log_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) source_card_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderArgumentGraph {
+    #[serde(default)]
+    pub(crate) nodes: Vec<ReaderArgumentNode>,
+    #[serde(default)]
+    pub(crate) edges: Vec<ReaderArgumentEdge>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderNarrativePlan {
+    pub(crate) lead_section_id: Option<String>,
+    #[serde(default)]
+    pub(crate) section_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) transition_ids: Vec<String>,
+    pub(crate) narrative_arc: Option<String>,
+    pub(crate) ending_note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderSectionBrief {
+    pub(crate) section_id: Option<String>,
+    pub(crate) key_point: String,
+    pub(crate) reader_goal: Option<String>,
+    #[serde(default)]
+    pub(crate) claim_log_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) source_card_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderCritiqueMetric {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    #[serde(
+        default = "default_reader_critique_metric_status",
+        deserialize_with = "deserialize_reader_critique_metric_status"
+    )]
+    pub(crate) status: String,
+    pub(crate) rationale: Option<String>,
+}
+
+fn default_reader_critique_metric_status() -> String {
+    "unknown".to_string()
+}
+
+fn deserialize_reader_critique_metric_status<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|status| status.trim().to_string())
+        .filter(|status| !status.is_empty())
+        .unwrap_or_else(default_reader_critique_metric_status))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderCritique {
+    pub(crate) summary: Option<String>,
+    #[serde(default)]
+    pub(crate) strengths: Vec<String>,
+    #[serde(default)]
+    pub(crate) weaknesses: Vec<String>,
+    #[serde(default)]
+    pub(crate) improvement_priorities: Vec<String>,
+    #[serde(default)]
+    pub(crate) metrics: Vec<ReaderCritiqueMetric>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReaderQualityArtifacts {
+    #[serde(default)]
+    pub(crate) argument_graph: Option<ReaderArgumentGraph>,
+    #[serde(default)]
+    pub(crate) narrative_plan: Option<ReaderNarrativePlan>,
+    #[serde(default)]
+    pub(crate) section_briefs: Vec<ReaderSectionBrief>,
+    #[serde(default)]
+    pub(crate) reader_critique: Option<ReaderCritique>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NarrativeTimelineEvent {
     pub(crate) id: String,
     pub(crate) label: String,
@@ -299,6 +416,8 @@ pub(crate) struct NarrativeCausalLink {
     pub(crate) effect: String,
     pub(crate) rationale: Option<String>,
     #[serde(default)]
+    pub(crate) derived_from: Option<String>,
+    #[serde(default)]
     pub(crate) expected_claim_log_ids: Vec<String>,
     #[serde(default)]
     pub(crate) expected_source_card_ids: Vec<String>,
@@ -309,6 +428,8 @@ pub(crate) struct NarrativeEvidenceLayer {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) purpose: Option<String>,
+    #[serde(default)]
+    pub(crate) derived_from: Option<String>,
     #[serde(default)]
     pub(crate) expected_claim_log_ids: Vec<String>,
     #[serde(default)]
@@ -334,6 +455,8 @@ pub(crate) struct NarrativeImpact {
     pub(crate) scope: Option<String>,
     pub(crate) implication: Option<String>,
     #[serde(default)]
+    pub(crate) derived_from: Option<String>,
+    #[serde(default)]
     pub(crate) expected_claim_log_ids: Vec<String>,
     #[serde(default)]
     pub(crate) expected_source_card_ids: Vec<String>,
@@ -356,6 +479,8 @@ pub(crate) struct NarrativeSectionOutlineItem {
     pub(crate) id: String,
     pub(crate) heading: String,
     pub(crate) purpose: Option<String>,
+    #[serde(default)]
+    pub(crate) derived_from: Option<String>,
     #[serde(default)]
     pub(crate) expected_claim_log_ids: Vec<String>,
     #[serde(default)]
@@ -383,6 +508,34 @@ pub(crate) struct NarrativeOpenGap {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NarrativeCausalSpineStep {
+    pub(crate) step_type: String,
+    pub(crate) description: String,
+    pub(crate) epistemic_status: Option<String>,
+    pub(crate) reasoning: Option<String>,
+    #[serde(default)]
+    pub(crate) limits: Vec<String>,
+    #[serde(default)]
+    pub(crate) claim_log_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) source_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NarrativeInterpretiveLayer {
+    pub(crate) layer_type: String,
+    pub(crate) interpretation: String,
+    pub(crate) epistemic_status: Option<String>,
+    pub(crate) reasoning: Option<String>,
+    #[serde(default)]
+    pub(crate) limits: Vec<String>,
+    #[serde(default)]
+    pub(crate) claim_log_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) source_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NarrativeEventCard {
     pub(crate) label: String,
     pub(crate) timeframe: Option<String>,
@@ -393,7 +546,13 @@ pub(crate) struct NarrativeEventCard {
     pub(crate) development: Option<String>,
     pub(crate) outcome: Option<String>,
     #[serde(default)]
+    pub(crate) claim_log_ids: Vec<String>,
+    #[serde(default)]
     pub(crate) source_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) causal_spine: Vec<NarrativeCausalSpineStep>,
+    #[serde(default)]
+    pub(crate) interpretive_layers: Vec<NarrativeInterpretiveLayer>,
     pub(crate) confidence: Option<String>,
     #[serde(default)]
     pub(crate) open_questions: Vec<String>,
@@ -444,6 +603,8 @@ pub(crate) struct ResearchControllerArtifacts {
     #[serde(default)]
     pub(crate) research_debt: Vec<ResearchDebtItem>,
     pub(crate) narrative_state: Option<NarrativeState>,
+    #[serde(default)]
+    pub(crate) reader_quality: Option<ReaderQualityArtifacts>,
     pub(crate) quality_gate: Option<ResearchQualityGateArtifact>,
     #[serde(default)]
     pub(crate) warnings: Vec<String>,
@@ -560,7 +721,25 @@ pub(crate) struct ResearchContextPackingDiagnostics {
     #[serde(default)]
     pub(crate) narrative_open_gap_count: usize,
     #[serde(default)]
+    pub(crate) reader_quality_present: bool,
+    #[serde(default)]
+    pub(crate) reader_argument_node_count: usize,
+    #[serde(default)]
+    pub(crate) reader_argument_edge_count: usize,
+    #[serde(default)]
+    pub(crate) reader_narrative_plan_present: bool,
+    #[serde(default)]
+    pub(crate) reader_section_brief_count: usize,
+    #[serde(default)]
+    pub(crate) reader_critique_present: bool,
+    #[serde(default)]
+    pub(crate) reader_critique_metric_count: usize,
+    #[serde(default)]
+    pub(crate) reader_critique_failed_metric_count: usize,
+    #[serde(default)]
     pub(crate) narrative_omitted_chars: usize,
+    #[serde(default)]
+    pub(crate) reader_quality_omitted_chars: usize,
     #[serde(default)]
     pub(crate) notes: Vec<String>,
 }
@@ -1108,6 +1287,115 @@ mod tests {
 
         assert_eq!(state.open_gaps.len(), 1);
         assert_eq!(state.open_gaps[0].gap_type, "actor");
+    }
+
+    #[test]
+    fn reader_quality_round_trips_with_optional_sub_artifacts() {
+        let artifacts: ResearchControllerArtifacts = serde_json::from_value(json!({
+            "version": 1,
+            "source_cards": [],
+            "claim_log": [],
+            "conflict_map": [],
+            "research_debt": [],
+            "reader_quality": {
+                "argument_graph": {
+                    "nodes": [
+                        {
+                            "id": "AQN1",
+                            "label": "Core claim cluster",
+                            "node_type": "support",
+                            "rationale": "This cluster carries the main answer.",
+                            "claim_log_ids": ["C1"],
+                            "source_card_ids": ["S1"]
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "id": "AQE1",
+                            "from_node_id": "AQN1",
+                            "to_node_id": "AQN2",
+                            "relation": "supports",
+                            "rationale": "Bridge the key causal step.",
+                            "claim_log_ids": ["C2"],
+                            "source_card_ids": ["S2"]
+                        }
+                    ]
+                },
+                "narrative_plan": {
+                    "lead_section_id": "SEC1",
+                    "section_ids": ["SEC1", "SEC2"],
+                    "transition_ids": ["TR1"],
+                    "narrative_arc": "Background to consequence",
+                    "ending_note": "Close with operational implication"
+                },
+                "section_briefs": [
+                    {
+                        "section_id": "SEC1",
+                        "key_point": "Open with the contested background before resolving it.",
+                        "reader_goal": "Orient the reader quickly",
+                        "claim_log_ids": ["C1"],
+                        "source_card_ids": ["S1"]
+                    }
+                ],
+                "reader_critique": {
+                    "summary": "The answer is clear but the middle transition is still weak.",
+                    "strengths": ["Strong opening context"],
+                    "weaknesses": ["Middle section jumps too quickly"],
+                    "improvement_priorities": ["Tighten the transition into the evidence section"],
+                    "metrics": [
+                        {
+                            "key": "clarity",
+                            "label": "Reader clarity",
+                            "status": "passed",
+                            "rationale": "The opening frame is easy to follow."
+                        },
+                        {
+                            "key": "transition",
+                            "label": "Section transition",
+                            "status": "needs_work",
+                            "rationale": "The causal bridge is still thin."
+                        }
+                    ]
+                }
+            },
+            "quality_gate": null,
+            "warnings": []
+        }))
+        .expect("reader quality should deserialize");
+
+        let reader_quality = artifacts
+            .reader_quality
+            .as_ref()
+            .expect("reader quality should be present");
+        assert_eq!(
+            reader_quality
+                .argument_graph
+                .as_ref()
+                .map(|graph| graph.nodes.len()),
+            Some(1)
+        );
+        assert_eq!(reader_quality.section_briefs.len(), 1);
+        assert_eq!(
+            reader_quality
+                .reader_critique
+                .as_ref()
+                .map(|critique| critique.metrics.len()),
+            Some(2)
+        );
+
+        let serialized = serde_json::to_value(&artifacts).expect("serialize artifacts");
+        assert!(serialized
+            .get("reader_quality")
+            .and_then(|value| value.get("argument_graph"))
+            .is_some());
+        assert!(serialized
+            .get("reader_quality")
+            .and_then(|value| value.get("section_briefs"))
+            .is_some());
+        assert!(serialized
+            .get("reader_quality")
+            .and_then(|value| value.get("reader_critique"))
+            .is_some());
     }
 
     #[test]

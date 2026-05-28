@@ -21,7 +21,7 @@ Fast path for future requests:
 | Future request shape | Immediate interpretation |
 | --- | --- |
 | "Improve research quality for source richness" | Add or adjust source-pack/search cases, check source diversity, and verify that source-pack status is honest. |
-| "Make historical reports richer but still readable" | Use historical cases, preserve reader-facing prose, and strengthen chronology, source layers, contested points, and follow-up trails. |
+| "Make historical reports richer but still readable" | Use historical cases, preserve reader-facing prose, strengthen chronology, source layers, contested points, follow-up trails, require useful hidden `narrative_state`/`reader_quality` planning artifacts for strict/high runs, and keep visible phase density for campaign-history subjects such as Hannibal / Second Punic War. |
 | "Make technical research more useful" | Use technical implementation cases, score design judgment, tradeoffs, verification strategy, and practical next steps. |
 | "The score looks too generous" | Run replay or fixture scoring first, inspect source-pack and rubric dimensions, then fix scoring before any new live run. |
 | "The answer reads well but sources feel weak" | Separate final-answer quality from source-pack quality and validate adopted sources before trusting the score. |
@@ -40,13 +40,16 @@ Map user language to the shared rubric before writing prompts or scoring results
 | --- | --- |
 | Better evidence or sourcing | Evidence/claim traceability, source quality and diversity |
 | Better uncertainty handling | Handling of uncertainty and conflicts |
-| Better historical writing | Historical overlay gates plus Genre/section richness |
+| Better historical writing | Historical overlay gates plus Genre/section richness, with hidden historical planning-artifact depth checked separately from evidence |
 | Better technical guidance | Direct answer usefulness, practical next steps, Genre/section richness |
 | Better decision support | User intent fit, practical next steps, information resolution |
 | Less rumor leakage | Official/rumor/opinion separation |
 | Better structure | Structure and readability |
+| Better reader flow or narrative coherence | Structure and readability plus the additive reader-quality diagnostics (`argument_graph`, `narrative_plan`, `section_briefs`, `reader_critique`) |
 
-Shared dimensions stay unchanged across categories. The only benchmark-only extra is the category-aware `Genre/section richness` dimension. Historical categories also add the historical overlay gates and score caps described in `rubric.md`.
+Shared dimensions stay unchanged across categories. The only benchmark-only extra is the category-aware `Genre/section richness` dimension. Historical categories also add the historical overlay gates and score caps described in `rubric.md`. For strict/high historical cases, keep the visible richness markers and the hidden planning artifacts aligned: a historically rich answer should not ship with empty `narrative_state` and `reader_quality`.
+
+For narrow campaign-history subjects where regression risk is known, prefer a structural floor instead of exemplar prose. Hannibal / Second Punic War is the current example: preserve event-card-driven visible phase subsections, date anchors, and actor/front anchors so a later draft cannot collapse into a short summary while still looking superficially complete.
 
 ## 3. When To Use Live vs Replay
 
@@ -101,6 +104,7 @@ Commit only durable, reviewable markdown and score summaries:
 
 - Commit: `README.md`, `final-report.md`, evaluation docs, run summaries, compact CSV aggregates, and reviewed sanitized `*-final-output.md` artifacts when they are meant to be durable records.
 - Do not commit: raw diagnostics, resolved prompts, controller artifact dumps, provider payloads, or temp live outputs.
+- Do not commit raw Reader Quality prompt scaffolds separately. They live only inside the existing hidden controller-artifact envelope and stay out of commit-safe markdown.
 - If a run produces per-case raw artifacts, keep them in temp or local archive storage and reference them from the summary instead of copying them into the repo. Only sanitized reader-facing final outputs should be promoted into `runs/<label>/`.
 
 If a request explicitly asks for a durable replay or comparison artifact, commit the derived summary only, not the raw bundle.
@@ -210,3 +214,10 @@ When closing a request, aim to leave:
 - only the durable artifacts that need to be preserved
 
 This keeps the workflow repeatable: intake, map, choose mode, run gates, commit summaries, report results.
+
+
+### Historical phase dossier gate
+
+Strict/high broad-history runs should not treat `event_cards` as mere chronology rows. Important cards should include grounded `causal_spine` steps and grounded `interpretive_layers`; the visible report should expand those dossiers into phase prose while the verification appendix remains the evidence ledger. Flat claim-linked cards are useful as fallback diagnostics but should not be reported as narrative-depth success.
+
+Interpretation is allowed and expected. The gate should reject unsupported facts and illogical inference, not all inference: use `epistemic_status`, `reasoning`, and `limits` to keep fact anchors, grounded interpretation, and one-step inference distinct. A useful historical report is not just fact checking; it explains what the evidence means and where the reasoning would break.

@@ -232,14 +232,16 @@ pub(crate) async fn test_engine_preset_status(
             }
             let model = preset.model.as_deref().unwrap_or("llama3");
             match ensure_pi_ollama_models_config(data_dir, model).await {
-                Ok(models) if models.iter().any(|listed| listed == model) => (
-                    "available".to_string(),
-                    if preset.web_search_enabled == "true" {
-                        format!("pi가 Ollama 모델 {model}과 Liquid 웹검색 도구 설정을 확인했습니다.")
-                    } else {
-                        format!("pi가 Ollama 모델 {model}을 확인했습니다.")
-                    },
-                ),
+                Ok(models) if models.iter().any(|listed| listed == model) => {
+                    (
+                        "available".to_string(),
+                        if preset.web_search_enabled == "true" {
+                            format!("pi가 Ollama 모델 {model}과 Liquid 웹검색 도구 설정을 확인했습니다.")
+                        } else {
+                            format!("pi가 Ollama 모델 {model}을 확인했습니다.")
+                        },
+                    )
+                }
                 Ok(_) => (
                     "needs_setup".to_string(),
                     format!("pi는 실행되지만 Ollama 모델 {model}이 목록에 없습니다."),

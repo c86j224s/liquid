@@ -27,10 +27,8 @@ const LIVE_QUALITY_MEASUREMENT: &str = "live_non_deterministic_quality_measureme
 const REPLAY_QUALITY_MEASUREMENT: &str = "artifact_backed_replay_validation";
 const PIPELINE_EVIDENCE_CAVEAT: &str =
     "Fixture-only pipeline evidence; not live research quality proof.";
-const LIVE_QUALITY_CAVEAT: &str =
-    "Live non-deterministic benchmark measurement; compare only against runs with matching provider/runtime settings.";
-const REPLAY_QUALITY_CAVEAT: &str =
-    "Deterministic replay from frozen live bundles; validates rendering and strict gates without fresh model or network calls.";
+const LIVE_QUALITY_CAVEAT: &str = "Live non-deterministic benchmark measurement; compare only against runs with matching provider/runtime settings.";
+const REPLAY_QUALITY_CAVEAT: &str = "Deterministic replay from frozen live bundles; validates rendering and strict gates without fresh model or network calls.";
 const SCORE_VISIBILITY: &str = "per_case_and_run_aggregate";
 
 const SOURCE_AUDIT_HEADINGS: &[&str] = &["## source audit", "## 출처 감사"];
@@ -125,6 +123,12 @@ struct Args {
     cli_launch_mode: Option<String>,
     #[arg(long, env = "LIQUID_AI_TASK_TIMEOUT_SECS", default_value_t = 3600)]
     ai_task_timeout_secs: u64,
+    #[arg(
+        long,
+        env = "LIQUID_BENCH_INCLUDE_RAW_DEBUG_ARTIFACTS",
+        default_value_t = false
+    )]
+    include_raw_debug_artifacts: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -269,8 +273,19 @@ struct BenchmarkEvidenceMetrics {
     narrative_impact_count: usize,
     narrative_reader_question_count: usize,
     narrative_open_gap_count: usize,
+    reader_quality_present: bool,
+    reader_argument_node_count: usize,
+    reader_argument_edge_count: usize,
+    reader_narrative_plan_present: bool,
+    reader_section_brief_count: usize,
+    reader_critique_present: bool,
+    reader_critique_metric_count: usize,
+    reader_critique_failed_metric_count: usize,
     context_pack_narrative_state_present: bool,
     context_pack_narrative_open_gap_count: usize,
+    context_pack_reader_quality_present: bool,
+    context_pack_reader_section_brief_count: usize,
+    context_pack_reader_critique_metric_count: usize,
     invalid_source_card_url_count: usize,
     target_host_miss_count: usize,
     source_class_miss_count: usize,
@@ -289,6 +304,10 @@ struct BenchmarkEvidenceMetrics {
     historical_issue_map_signal_count: usize,
     historical_legacy_signal_count: usize,
     historical_follow_up_signal_count: usize,
+    second_punic_visible_chars: usize,
+    second_punic_phase_subsection_count: usize,
+    second_punic_date_anchor_count: usize,
+    second_punic_subject_anchor_count: usize,
     technology_design_judgment_signal_count: usize,
     technology_tradeoff_signal_count: usize,
     technology_verifiability_signal_count: usize,
@@ -353,6 +372,7 @@ struct ParsedControllerArtifacts {
     #[serde(default)]
     research_debt: Vec<ParsedDebtItem>,
     narrative_state: Option<ParsedNarrativeState>,
+    reader_quality: Option<ParsedReaderQuality>,
     quality_gate: Option<ParsedQualityGate>,
     #[serde(default)]
     warnings: Vec<String>,
@@ -374,6 +394,52 @@ struct ParsedNarrativeState {
     section_outline: Vec<serde_json::Value>,
     #[serde(default)]
     open_gaps: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ParsedReaderQuality {
+    argument_graph: Option<ParsedArgumentGraph>,
+    narrative_plan: Option<serde_json::Value>,
+    #[serde(default)]
+    section_briefs: Vec<serde_json::Value>,
+    reader_critique: Option<ParsedReaderCritique>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ParsedArgumentGraph {
+    #[serde(default)]
+    nodes: Vec<serde_json::Value>,
+    #[serde(default)]
+    edges: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ParsedReaderCritique {
+    #[serde(default)]
+    metrics: Vec<ParsedReaderCritiqueMetric>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ParsedReaderCritiqueMetric {
+    #[serde(
+        default = "default_reader_critique_metric_status",
+        deserialize_with = "deserialize_reader_critique_metric_status"
+    )]
+    status: String,
+}
+
+fn default_reader_critique_metric_status() -> String {
+    "unknown".to_string()
+}
+
+fn deserialize_reader_critique_metric_status<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|status| status.trim().to_string())
+        .filter(|status| !status.is_empty())
+        .unwrap_or_else(default_reader_critique_metric_status))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -485,6 +551,22 @@ struct ParsedContextPackingDiagnostics {
     narrative_reader_question_count: usize,
     #[serde(default)]
     narrative_open_gap_count: usize,
+    #[serde(default)]
+    reader_quality_present: bool,
+    #[serde(default)]
+    reader_argument_node_count: usize,
+    #[serde(default)]
+    reader_argument_edge_count: usize,
+    #[serde(default)]
+    reader_narrative_plan_present: bool,
+    #[serde(default)]
+    reader_section_brief_count: usize,
+    #[serde(default)]
+    reader_critique_present: bool,
+    #[serde(default)]
+    reader_critique_metric_count: usize,
+    #[serde(default)]
+    reader_critique_failed_metric_count: usize,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -597,7 +679,12 @@ struct CriticalFlagSpec {
     label: &'static str,
 }
 
-const CRITICAL_FLAG_SPECS: [CriticalFlagSpec; 11] = [
+const SECOND_PUNIC_WAR_MIN_VISIBLE_CHARS: usize = 900;
+const SECOND_PUNIC_WAR_MIN_PHASE_SUBSECTIONS: usize = 6;
+const SECOND_PUNIC_WAR_MIN_DATE_ANCHORS: usize = 6;
+const SECOND_PUNIC_WAR_MIN_SUBJECT_ANCHORS: usize = 8;
+
+const CRITICAL_FLAG_SPECS: [CriticalFlagSpec; 12] = [
     CriticalFlagSpec {
         key: "unsupported_factual_claim",
         label: "Unsupported factual claim that affects the conclusion",
@@ -641,6 +728,10 @@ const CRITICAL_FLAG_SPECS: [CriticalFlagSpec; 11] = [
     CriticalFlagSpec {
         key: "historical_missing_limits_or_contested_interpretation",
         label: "Historical answer omits source limits, scope limits, or contested interpretations",
+    },
+    CriticalFlagSpec {
+        key: "historical_campaign_phase_density_floor",
+        label: "Historical campaign answer drops below the Second Punic War phase-density floor",
     },
 ];
 
@@ -743,6 +834,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             .filter(|flag| flag.triggered)
                             .count(),
                     }),
+                    args.include_raw_debug_artifacts,
                 ));
             }
         }
@@ -794,6 +886,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     plan,
                     result,
                     None,
+                    args.include_raw_debug_artifacts,
                 ));
                 if args.data_dir.is_none() {
                     let _ = fs::remove_dir_all(case_data_dir);
@@ -845,7 +938,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         render_markdown_dimension_summary(&structured_report.dimension_aggregates),
         case_plans
             .iter()
-            .map(|plan| format!("- {}: {} ({})", plan.case.category, plan.case.title, plan.case.filename))
+            .map(|plan| format!(
+                "- {}: {} ({})",
+                plan.case.category, plan.case.title, plan.case.filename
+            ))
             .collect::<Vec<_>>()
             .join("\n"),
         case_sections.join("\n")
@@ -874,35 +970,39 @@ fn materialize_case_execution(
     plan: &CaseExecutionPlan,
     mut result: ResearchBenchmarkCaseResult,
     replay_before: Option<ReplayBeforeState>,
+    include_raw_debug_artifacts: bool,
 ) -> RunExecution {
     let mut scorecard = build_case_scorecard(&plan.case, &result);
-    let artifact_paths =
-        match write_case_artifacts(run_case_dir, &plan.artifact_stem, &result, &scorecard) {
-            Ok(paths) => paths,
-            Err(error) => {
-                result = synthetic_failed_result_from_existing(
-                    result,
-                    "artifact_write_failed",
-                    format!("benchmark artifact write failed: {error}"),
+    let artifact_paths = match write_case_artifacts(
+        run_case_dir,
+        &plan.artifact_stem,
+        &result,
+        &scorecard,
+        include_raw_debug_artifacts,
+    ) {
+        Ok(paths) => paths,
+        Err(error) => {
+            result = synthetic_failed_result_from_existing(
+                result,
+                "artifact_write_failed",
+                format!("benchmark artifact write failed: {error}"),
+            );
+            scorecard = build_case_scorecard(&plan.case, &result);
+            let fallback = write_case_failure_fallback_artifacts(
+                run_case_dir,
+                &plan.artifact_stem,
+                &result,
+                &scorecard,
+            );
+            if let Some(fallback_error) = fallback.error {
+                append_result_error_message(
+                    &mut result,
+                    format!("benchmark failure artifact fallback also failed: {fallback_error}"),
                 );
-                scorecard = build_case_scorecard(&plan.case, &result);
-                let fallback = write_case_failure_fallback_artifacts(
-                    run_case_dir,
-                    &plan.artifact_stem,
-                    &result,
-                    &scorecard,
-                );
-                if let Some(fallback_error) = fallback.error {
-                    append_result_error_message(
-                        &mut result,
-                        format!(
-                            "benchmark failure artifact fallback also failed: {fallback_error}"
-                        ),
-                    );
-                }
-                fallback.paths
             }
-        };
+            fallback.paths
+        }
+    };
 
     RunExecution {
         case: plan.case.clone(),
@@ -1210,7 +1310,7 @@ fn render_case_section(
     replay_before: Option<&ReplayBeforeState>,
 ) -> String {
     format!(
-        "\n## {title}\n\n- Category: {category}\n- Case file: {filename}\n- Prompt: {prompt}\n- Task status: {status}\n- Quality status: {quality_status}\n- Quality last failure: {quality_last_failure}\n- Replay before: {replay_before}\n- Structured overall score: {overall_score:.2}/5.00\n- Critical failure flags: {critical_failure_count}\n- Structured visibility: task={task_visibility}, quality={quality_visibility}, source_pack={source_pack_visibility}\n- Measurement kind: {measurement_kind}\n- Measurement caveat: {measurement_caveat}\n- Structured summary JSON: {summary_json}\n- Final output: {final_output}\n- Source diagnostics JSON: {diagnostics_json}\n- Controller artifacts JSON: {controller_json}\n- Resolved system prompt: {system_prompt}\n- Resolved user prompt: {user_prompt}\n\n### Rubric Dimensions\n{dimensions}\n\n### Critical Failure Flags\n{critical_flags}\n\n### Must-Pass Evidence Checks\n{checks}\n\n### Expected Failure Modes\n{failures}\n\n### Artifact And Diagnostic Availability\n- source diagnostics envelope: {source_diag_state}\n- controller artifacts envelope: {controller_state}\n- structured context packing diagnostics: {context_pack_state}\n- fixture-only pipeline evidence label: {fixture_label}\n- narrative state in controller artifacts: {narrative_state_present}\n- narrative metrics: timeline={narrative_timeline_event_count} sections={narrative_section_count} evidence_layers={narrative_evidence_layer_count} tensions={narrative_interpretive_tension_count} impacts={narrative_impact_count} reader_questions={narrative_reader_question_count} open_gaps={narrative_open_gap_count}\n- context-pack narrative diagnostics: present={context_pack_narrative_state_present} open_gaps={context_pack_narrative_open_gap_count}\n",
+        "\n## {title}\n\n- Category: {category}\n- Case file: {filename}\n- Prompt: {prompt}\n- Task status: {status}\n- Quality status: {quality_status}\n- Quality last failure: {quality_last_failure}\n- Replay before: {replay_before}\n- Structured overall score: {overall_score:.2}/5.00\n- Critical failure flags: {critical_failure_count}\n- Structured visibility: task={task_visibility}, quality={quality_visibility}, source_pack={source_pack_visibility}\n- Measurement kind: {measurement_kind}\n- Measurement caveat: {measurement_caveat}\n- Structured summary JSON: {summary_json}\n- Final output: {final_output}\n- Source diagnostics JSON: {diagnostics_json}\n- Controller artifacts JSON: {controller_json}\n- Resolved system prompt: {system_prompt}\n- Resolved user prompt: {user_prompt}\n\n### Rubric Dimensions\n{dimensions}\n\n### Critical Failure Flags\n{critical_flags}\n\n### Must-Pass Evidence Checks\n{checks}\n\n### Expected Failure Modes\n{failures}\n\n### Artifact And Diagnostic Availability\n- source diagnostics envelope: {source_diag_state}\n- controller artifacts envelope: {controller_state}\n- structured context packing diagnostics: {context_pack_state}\n- fixture-only pipeline evidence label: {fixture_label}\n- narrative state in controller artifacts: {narrative_state_present}\n- narrative metrics: timeline={narrative_timeline_event_count} sections={narrative_section_count} evidence_layers={narrative_evidence_layer_count} tensions={narrative_interpretive_tension_count} impacts={narrative_impact_count} reader_questions={narrative_reader_question_count} open_gaps={narrative_open_gap_count}\n- reader-quality metrics: present={reader_quality_present} argument_nodes={reader_argument_node_count} argument_edges={reader_argument_edge_count} narrative_plan={reader_narrative_plan_present} section_briefs={reader_section_brief_count} critique_present={reader_critique_present} critique_metrics={reader_critique_metric_count} critique_failed_metrics={reader_critique_failed_metric_count}\n- context-pack narrative diagnostics: present={context_pack_narrative_state_present} open_gaps={context_pack_narrative_open_gap_count}\n- context-pack reader-quality diagnostics: present={context_pack_reader_quality_present} section_briefs={context_pack_reader_section_brief_count} critique_metrics={context_pack_reader_critique_metric_count}\n",
         title = case.title,
         category = case.category,
         filename = case.filename,
@@ -1247,7 +1347,10 @@ fn render_case_section(
             .final_output_path
             .as_ref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| result.error_message.clone().unwrap_or_else(|| "unavailable".to_string())),
+            .unwrap_or_else(|| result
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "unavailable".to_string())),
         diagnostics_json = artifact_paths
             .diagnostics_json_path
             .as_ref()
@@ -1333,12 +1436,28 @@ fn render_case_section(
         narrative_timeline_event_count = scorecard.metrics.narrative_timeline_event_count,
         narrative_section_count = scorecard.metrics.narrative_section_count,
         narrative_evidence_layer_count = scorecard.metrics.narrative_evidence_layer_count,
-        narrative_interpretive_tension_count = scorecard.metrics.narrative_interpretive_tension_count,
+        narrative_interpretive_tension_count =
+            scorecard.metrics.narrative_interpretive_tension_count,
         narrative_impact_count = scorecard.metrics.narrative_impact_count,
         narrative_reader_question_count = scorecard.metrics.narrative_reader_question_count,
         narrative_open_gap_count = scorecard.metrics.narrative_open_gap_count,
-        context_pack_narrative_state_present = scorecard.metrics.context_pack_narrative_state_present,
-        context_pack_narrative_open_gap_count = scorecard.metrics.context_pack_narrative_open_gap_count,
+        reader_quality_present = scorecard.metrics.reader_quality_present,
+        reader_argument_node_count = scorecard.metrics.reader_argument_node_count,
+        reader_argument_edge_count = scorecard.metrics.reader_argument_edge_count,
+        reader_narrative_plan_present = scorecard.metrics.reader_narrative_plan_present,
+        reader_section_brief_count = scorecard.metrics.reader_section_brief_count,
+        reader_critique_present = scorecard.metrics.reader_critique_present,
+        reader_critique_metric_count = scorecard.metrics.reader_critique_metric_count,
+        reader_critique_failed_metric_count = scorecard.metrics.reader_critique_failed_metric_count,
+        context_pack_narrative_state_present =
+            scorecard.metrics.context_pack_narrative_state_present,
+        context_pack_narrative_open_gap_count =
+            scorecard.metrics.context_pack_narrative_open_gap_count,
+        context_pack_reader_quality_present = scorecard.metrics.context_pack_reader_quality_present,
+        context_pack_reader_section_brief_count =
+            scorecard.metrics.context_pack_reader_section_brief_count,
+        context_pack_reader_critique_metric_count =
+            scorecard.metrics.context_pack_reader_critique_metric_count,
     )
 }
 
@@ -1433,7 +1552,10 @@ fn render_failure_markdown_artifact(
         benchmark_mode_label(result.mode),
         result.status,
         result.quality_status.as_deref().unwrap_or("unknown"),
-        result.research_controller_stage.as_deref().unwrap_or("unknown"),
+        result
+            .research_controller_stage
+            .as_deref()
+            .unwrap_or("unknown"),
         result
             .error_message
             .as_deref()
@@ -1446,7 +1568,11 @@ fn render_failure_markdown_artifact(
         } else {
             critical_flags.join("\n")
         },
-        if result.final_output.is_some() { "yes" } else { "no" },
+        if result.final_output.is_some() {
+            "yes"
+        } else {
+            "no"
+        },
         if result.research_controller_artifacts_json.is_some() {
             "present"
         } else {
@@ -1548,6 +1674,7 @@ fn write_case_artifacts(
     artifact_stem: &str,
     result: &ResearchBenchmarkCaseResult,
     scorecard: &BenchmarkCaseScorecard,
+    include_raw_debug_artifacts: bool,
 ) -> Result<CaseArtifactPaths, Box<dyn std::error::Error>> {
     let mut paths = CaseArtifactPaths::default();
     let path = run_case_dir.join(format!("{artifact_stem}-final-output.md"));
@@ -1555,25 +1682,27 @@ fn write_case_artifacts(
         .unwrap_or_else(|| render_failure_markdown_artifact(result, scorecard));
     write_new_text_file(&path, &output)?;
     paths.final_output_path = Some(path);
-    if let Some(json_body) = result.research_source_diagnostics_json.as_deref() {
-        let path = run_case_dir.join(format!("{artifact_stem}-source-diagnostics.json"));
-        write_new_text_file(&path, json_body)?;
-        paths.diagnostics_json_path = Some(path);
-    }
-    if let Some(json_body) = result.research_controller_artifacts_json.as_deref() {
-        let path = run_case_dir.join(format!("{artifact_stem}-controller-artifacts.json"));
-        write_new_text_file(&path, json_body)?;
-        paths.controller_json_path = Some(path);
-    }
-    if let Some(prompt) = result.resolved_system_prompt.as_deref() {
-        let path = run_case_dir.join(format!("{artifact_stem}-resolved-system-prompt.md"));
-        write_new_text_file(&path, prompt)?;
-        paths.resolved_system_prompt_path = Some(path);
-    }
-    if let Some(prompt) = result.resolved_user_prompt.as_deref() {
-        let path = run_case_dir.join(format!("{artifact_stem}-resolved-user-prompt.md"));
-        write_new_text_file(&path, prompt)?;
-        paths.resolved_user_prompt_path = Some(path);
+    if include_raw_debug_artifacts {
+        if let Some(json_body) = result.research_source_diagnostics_json.as_deref() {
+            let path = run_case_dir.join(format!("{artifact_stem}-source-diagnostics.json"));
+            write_new_text_file(&path, json_body)?;
+            paths.diagnostics_json_path = Some(path);
+        }
+        if let Some(json_body) = result.research_controller_artifacts_json.as_deref() {
+            let path = run_case_dir.join(format!("{artifact_stem}-controller-artifacts.json"));
+            write_new_text_file(&path, json_body)?;
+            paths.controller_json_path = Some(path);
+        }
+        if let Some(prompt) = result.resolved_system_prompt.as_deref() {
+            let path = run_case_dir.join(format!("{artifact_stem}-resolved-system-prompt.md"));
+            write_new_text_file(&path, prompt)?;
+            paths.resolved_system_prompt_path = Some(path);
+        }
+        if let Some(prompt) = result.resolved_user_prompt.as_deref() {
+            let path = run_case_dir.join(format!("{artifact_stem}-resolved-user-prompt.md"));
+            write_new_text_file(&path, prompt)?;
+            paths.resolved_user_prompt_path = Some(path);
+        }
     }
     let summary_path = run_case_dir.join(format!("{artifact_stem}.json"));
     write_case_summary_json(&summary_path, result, scorecard)?;
@@ -1888,6 +2017,22 @@ fn build_case_scorecard(
             metrics.context_pack_narrative_open_gap_count
         ));
     }
+    if metrics.reader_quality_present || metrics.context_pack_reader_quality_present {
+        warnings.push(format!(
+            "reader-quality diagnostics: controller_present={} argument_nodes={} argument_edges={} narrative_plan={} section_briefs={} critique_present={} critique_metrics={} critique_failed_metrics={} context_pack_present={} context_pack_section_briefs={} context_pack_critique_metrics={}",
+            metrics.reader_quality_present,
+            metrics.reader_argument_node_count,
+            metrics.reader_argument_edge_count,
+            metrics.reader_narrative_plan_present,
+            metrics.reader_section_brief_count,
+            metrics.reader_critique_present,
+            metrics.reader_critique_metric_count,
+            metrics.reader_critique_failed_metric_count,
+            metrics.context_pack_reader_quality_present,
+            metrics.context_pack_reader_section_brief_count,
+            metrics.context_pack_reader_critique_metric_count
+        ));
+    }
     warnings.push(
         measurement_metadata(result.mode)
             .evidence_caveat
@@ -1898,6 +2043,51 @@ fn build_case_scorecard(
             "historical overlay downgraded this case because {} category-specific history gate(s) triggered",
             historical_overlay_trigger_count
         ));
+    }
+    if is_historical_benchmark_category(&case.category) {
+        if metrics.genre_section_richness_signal_count < 3 {
+            warnings.push(format!(
+                "historical richness remains shallow: visible richness coverage={} comparison={} chronology_interpretation={} source_layers={} issue_map={} legacy={} follow_up={}",
+                metrics.genre_section_richness_signal_count,
+                metrics.historical_comparison_signal_count,
+                metrics.historical_chronology_interpretation_split_signal_count,
+                metrics.historical_source_layer_signal_count,
+                metrics.historical_issue_map_signal_count,
+                metrics.historical_legacy_signal_count,
+                metrics.historical_follow_up_signal_count
+            ));
+        }
+        if !historical_hidden_artifacts_present(&metrics, controller.as_ref()) {
+            warnings.push(
+                "historical hidden planning artifacts are missing: persist useful narrative_state or reader_quality for strict/high historical runs"
+                    .to_string(),
+            );
+        }
+        let generic_open_debt_count = controller
+            .as_ref()
+            .map(historical_generic_open_debt_count)
+            .unwrap_or(0);
+        if generic_open_debt_count > 0 {
+            warnings.push(format!(
+                "historical open debt still uses generic missing-evidence placeholders: rows={}",
+                generic_open_debt_count
+            ));
+        }
+        if is_second_punic_benchmark_case(case)
+            && (metrics.second_punic_visible_chars < SECOND_PUNIC_WAR_MIN_VISIBLE_CHARS
+                || metrics.second_punic_phase_subsection_count
+                    < SECOND_PUNIC_WAR_MIN_PHASE_SUBSECTIONS
+                || metrics.second_punic_date_anchor_count < SECOND_PUNIC_WAR_MIN_DATE_ANCHORS
+                || metrics.second_punic_subject_anchor_count < SECOND_PUNIC_WAR_MIN_SUBJECT_ANCHORS)
+        {
+            warnings.push(format!(
+                "second punic war phase-density floor missed: visible_chars={} phase_subsections={} date_anchors={} subject_anchors={}",
+                metrics.second_punic_visible_chars,
+                metrics.second_punic_phase_subsection_count,
+                metrics.second_punic_date_anchor_count,
+                metrics.second_punic_subject_anchor_count
+            ));
+        }
     }
     BenchmarkCaseScorecard {
         case_id: case.case_id.clone(),
@@ -1959,6 +2149,14 @@ fn collect_benchmark_metrics(
         narrative_impact_count,
         narrative_reader_question_count,
         narrative_open_gap_count,
+        reader_quality_present,
+        reader_argument_node_count,
+        reader_argument_edge_count,
+        reader_narrative_plan_present,
+        reader_section_brief_count,
+        reader_critique_present,
+        reader_critique_metric_count,
+        reader_critique_failed_metric_count,
     ) = if let Some(controller) = controller {
         let source_hosts = controller
             .source_cards
@@ -2063,6 +2261,52 @@ fn collect_benchmark_metrics(
             .as_ref()
             .map(|state| state.open_gaps.len())
             .unwrap_or_default();
+        let reader_quality_present = controller.reader_quality.is_some();
+        let reader_argument_node_count = controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.argument_graph.as_ref())
+            .map(|graph| graph.nodes.len())
+            .unwrap_or_default();
+        let reader_argument_edge_count = controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.argument_graph.as_ref())
+            .map(|graph| graph.edges.len())
+            .unwrap_or_default();
+        let reader_narrative_plan_present = controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.narrative_plan.as_ref())
+            .is_some();
+        let reader_section_brief_count = controller
+            .reader_quality
+            .as_ref()
+            .map(|reader_quality| reader_quality.section_briefs.len())
+            .unwrap_or_default();
+        let reader_critique_present = controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.reader_critique.as_ref())
+            .is_some();
+        let reader_critique_metric_count = controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.reader_critique.as_ref())
+            .map(|critique| critique.metrics.len())
+            .unwrap_or_default();
+        let reader_critique_failed_metric_count = controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.reader_critique.as_ref())
+            .map(|critique| {
+                critique
+                    .metrics
+                    .iter()
+                    .filter(|metric| !metric.status.eq_ignore_ascii_case("passed"))
+                    .count()
+            })
+            .unwrap_or_default();
         (
             controller.source_cards.len(),
             official_source_card_count,
@@ -2110,10 +2354,19 @@ fn collect_benchmark_metrics(
             narrative_impact_count,
             narrative_reader_question_count,
             narrative_open_gap_count,
+            reader_quality_present,
+            reader_argument_node_count,
+            reader_argument_edge_count,
+            reader_narrative_plan_present,
+            reader_section_brief_count,
+            reader_critique_present,
+            reader_critique_metric_count,
+            reader_critique_failed_metric_count,
         )
     } else {
         (
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, false,
+            0, 0, false, 0, false, 0, 0,
         )
     };
     let (
@@ -2127,6 +2380,9 @@ fn collect_benchmark_metrics(
         context_pack_omitted_source_card_count,
         context_pack_narrative_state_present,
         context_pack_narrative_open_gap_count,
+        context_pack_reader_quality_present,
+        context_pack_reader_section_brief_count,
+        context_pack_reader_critique_metric_count,
         target_host_miss_count,
         source_class_miss_count,
     ) = if let Some(diagnostics) = diagnostics {
@@ -2178,6 +2434,21 @@ fn collect_benchmark_metrics(
                 .map(|context| context.narrative_open_gap_count)
                 .unwrap_or_default(),
             diagnostics
+                .context_packing
+                .as_ref()
+                .map(|context| context.reader_quality_present)
+                .unwrap_or(false),
+            diagnostics
+                .context_packing
+                .as_ref()
+                .map(|context| context.reader_section_brief_count)
+                .unwrap_or_default(),
+            diagnostics
+                .context_packing
+                .as_ref()
+                .map(|context| context.reader_critique_metric_count)
+                .unwrap_or_default(),
+            diagnostics
                 .source_pack
                 .as_ref()
                 .map(|report| {
@@ -2203,12 +2474,17 @@ fn collect_benchmark_metrics(
                 .unwrap_or_default(),
         )
     } else {
-        (0, 0, 0, 0, 0, 0, 0, 0, false, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0, 0, 0, false, 0, false, 0, 0, 0, 0)
     };
     let historical_metrics = if is_historical_benchmark_category(&case.category) {
         collect_historical_overlay_metrics(reader_facing_output)
     } else {
         HistoricalOverlayMetrics::default()
+    };
+    let second_punic_metrics = if is_second_punic_benchmark_case(case) {
+        collect_second_punic_benchmark_metrics(reader_facing_output)
+    } else {
+        SecondPunicBenchmarkMetrics::default()
     };
     let technology_genre_metrics = if is_technology_like_benchmark_category(&case.category) {
         collect_technology_genre_metrics(reader_facing_output)
@@ -2261,8 +2537,19 @@ fn collect_benchmark_metrics(
         narrative_impact_count,
         narrative_reader_question_count,
         narrative_open_gap_count,
+        reader_quality_present,
+        reader_argument_node_count,
+        reader_argument_edge_count,
+        reader_narrative_plan_present,
+        reader_section_brief_count,
+        reader_critique_present,
+        reader_critique_metric_count,
+        reader_critique_failed_metric_count,
         context_pack_narrative_state_present,
         context_pack_narrative_open_gap_count,
+        context_pack_reader_quality_present,
+        context_pack_reader_section_brief_count,
+        context_pack_reader_critique_metric_count,
         invalid_source_card_url_count,
         target_host_miss_count,
         source_class_miss_count,
@@ -2283,6 +2570,10 @@ fn collect_benchmark_metrics(
         historical_issue_map_signal_count: historical_metrics.issue_map_signal_count,
         historical_legacy_signal_count: historical_metrics.legacy_signal_count,
         historical_follow_up_signal_count: historical_metrics.follow_up_signal_count,
+        second_punic_visible_chars: second_punic_metrics.visible_chars,
+        second_punic_phase_subsection_count: second_punic_metrics.phase_subsection_count,
+        second_punic_date_anchor_count: second_punic_metrics.date_anchor_count,
+        second_punic_subject_anchor_count: second_punic_metrics.subject_anchor_count,
         technology_design_judgment_signal_count: technology_genre_metrics
             .design_judgment_signal_count,
         technology_tradeoff_signal_count: technology_genre_metrics.tradeoff_signal_count,
@@ -2463,6 +2754,25 @@ fn build_critical_flags(
                         metrics.historical_evidence_limit_signal_count,
                         metrics.historical_contested_interpretation_signal_count,
                         metrics.historical_scope_limit_signal_count
+                    ),
+                ),
+                "historical_campaign_phase_density_floor" => (
+                    is_second_punic_benchmark_case(case)
+                        && visibility.visible_final_answer
+                        && (metrics.second_punic_visible_chars
+                            < SECOND_PUNIC_WAR_MIN_VISIBLE_CHARS
+                            || metrics.second_punic_phase_subsection_count
+                                < SECOND_PUNIC_WAR_MIN_PHASE_SUBSECTIONS
+                            || metrics.second_punic_date_anchor_count
+                                < SECOND_PUNIC_WAR_MIN_DATE_ANCHORS
+                            || metrics.second_punic_subject_anchor_count
+                                < SECOND_PUNIC_WAR_MIN_SUBJECT_ANCHORS),
+                    format!(
+                        "second_punic_visible_chars={} phase_subsections={} date_anchors={} subject_anchors={}",
+                        metrics.second_punic_visible_chars,
+                        metrics.second_punic_phase_subsection_count,
+                        metrics.second_punic_date_anchor_count,
+                        metrics.second_punic_subject_anchor_count
                     ),
                 ),
                 _ => (false, "unknown critical flag".to_string()),
@@ -2925,6 +3235,14 @@ struct HistoricalOverlayMetrics {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+struct SecondPunicBenchmarkMetrics {
+    visible_chars: usize,
+    phase_subsection_count: usize,
+    date_anchor_count: usize,
+    subject_anchor_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 struct TechnologyGenreMetrics {
     design_judgment_signal_count: usize,
     tradeoff_signal_count: usize,
@@ -2978,6 +3296,373 @@ impl TechnologyGenreMetrics {
 
 fn is_historical_benchmark_category(category: &str) -> bool {
     matches!(category, "historical-research" | "historical-explanation")
+}
+
+fn is_second_punic_benchmark_case(case: &BenchmarkCase) -> bool {
+    let subject = format!("{} {}", case.title, case.filename).to_ascii_lowercase();
+    let prompt = case.prompt.to_ascii_lowercase();
+    let combined = format!("{subject} {prompt}");
+    let subject_has_first_or_third = benchmark_has_non_second_punic_war_marker(&subject);
+    let combined_has_first_or_third = benchmark_has_non_second_punic_war_marker(&combined);
+    let subject_has_hannibal_marker = benchmark_has_hannibal_marker(&subject);
+    let combined_has_hannibal_marker = benchmark_has_hannibal_marker(&combined);
+    let subject_has_second_punic_marker = benchmark_has_second_punic_marker(&subject);
+    let combined_has_second_punic_marker = benchmark_has_second_punic_marker(&combined);
+
+    if benchmark_second_punic_has_comparative_scope(
+        &combined,
+        combined_has_first_or_third,
+        combined_has_second_punic_marker,
+    ) && !benchmark_second_punic_has_centered_focus(
+        &subject,
+        &prompt,
+        subject_has_first_or_third,
+        subject_has_second_punic_marker,
+        subject_has_hannibal_marker,
+    ) {
+        return false;
+    }
+
+    if combined_has_first_or_third && !combined_has_second_punic_marker {
+        return false;
+    }
+    if combined_has_second_punic_marker || combined_has_hannibal_marker {
+        return true;
+    }
+
+    combined.contains("포에니 전쟁")
+        && ["제2차", "2차", "한니발"]
+            .iter()
+            .any(|marker| combined.contains(marker))
+}
+
+fn benchmark_has_non_second_punic_war_marker(text: &str) -> bool {
+    [
+        "first punic war",
+        "3rd punic war",
+        "third punic war",
+        "제1차 포에니 전쟁",
+        "제3차 포에니 전쟁",
+        "1차 포에니 전쟁",
+        "3차 포에니 전쟁",
+        "제1차 포에닉 전쟁",
+        "제3차 포에닉 전쟁",
+    ]
+    .iter()
+    .any(|marker| text.contains(&marker.to_ascii_lowercase()))
+}
+
+fn benchmark_has_hannibal_marker(text: &str) -> bool {
+    ["hannibal", "한니발"]
+        .iter()
+        .any(|marker| text.contains(&marker.to_ascii_lowercase()))
+}
+
+fn benchmark_has_second_punic_marker(text: &str) -> bool {
+    [
+        "second punic war",
+        "2nd punic war",
+        "제2차 포에니 전쟁",
+        "2차 포에니 전쟁",
+        "제2차 포에닉 전쟁",
+    ]
+    .iter()
+    .any(|marker| text.contains(&marker.to_ascii_lowercase()))
+}
+
+fn benchmark_second_punic_has_comparative_scope(
+    text: &str,
+    has_first_or_third: bool,
+    has_second_punic: bool,
+) -> bool {
+    [
+        "compare",
+        "comparison",
+        "comparative",
+        "all punic wars",
+        "all three punic wars",
+        "three punic wars",
+        "across the punic wars",
+        "포에니 전쟁 전체",
+        "전체 포에니 전쟁",
+        "세 차례 포에니 전쟁",
+        "포에니 전쟁 비교",
+        "비교 개관",
+        "비교사",
+    ]
+    .iter()
+    .any(|marker| text.contains(&marker.to_ascii_lowercase()))
+        || (has_first_or_third && has_second_punic)
+}
+
+fn benchmark_second_punic_has_centered_focus(
+    subject: &str,
+    prompt: &str,
+    subject_has_first_or_third: bool,
+    subject_has_second_punic: bool,
+    subject_has_hannibal: bool,
+) -> bool {
+    if (subject_has_second_punic || subject_has_hannibal)
+        && !benchmark_second_punic_has_comparative_scope(
+            subject,
+            subject_has_first_or_third,
+            subject_has_second_punic,
+        )
+    {
+        return true;
+    }
+
+    [
+        "hannibal and the second punic war",
+        "second punic war campaign",
+        "hannibal's campaign",
+        "campaign of hannibal",
+        "focus on the second punic war",
+        "focus on hannibal",
+        "center on the second punic war",
+        "center on hannibal",
+        "centered on the second punic war",
+        "centered on hannibal",
+        "especially the second punic war",
+        "especially hannibal",
+        "with emphasis on the second punic war",
+        "with emphasis on hannibal",
+        "제2차 포에니 전쟁을 중심으로",
+        "제2차 포에니 전쟁 중심",
+        "제2차 포에니 전쟁에 초점",
+        "한니발과 제2차 포에니 전쟁",
+        "한니발 중심",
+        "한니발을 중심으로",
+        "한니발에 초점",
+        "한니발 원정",
+    ]
+    .iter()
+    .any(|marker| {
+        let marker = marker.to_ascii_lowercase();
+        subject.contains(&marker) || prompt.contains(&marker)
+    })
+}
+
+fn collect_second_punic_benchmark_metrics(
+    reader_facing_output: &str,
+) -> SecondPunicBenchmarkMetrics {
+    SecondPunicBenchmarkMetrics {
+        visible_chars: reader_facing_output.trim().chars().count(),
+        phase_subsection_count: reader_facing_output
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("### ") || trimmed.starts_with("#### ")
+            })
+            .count(),
+        date_anchor_count: count_second_punic_date_anchor_sentences(reader_facing_output),
+        subject_anchor_count: count_second_punic_subject_anchors(reader_facing_output),
+    }
+}
+
+fn count_second_punic_date_anchor_sentences(text: &str) -> usize {
+    text.split(|ch| matches!(ch, '.' | '!' | '?' | '\n'))
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .filter(|sentence| sentence_has_second_punic_date_anchor(sentence))
+        .count()
+}
+
+fn sentence_has_second_punic_date_anchor(sentence: &str) -> bool {
+    sentence_has_year_marker(sentence)
+        || ["bce", "bc", "ce", "ad", "기원전", "기원후", "세기"]
+            .iter()
+            .any(|marker| sentence.to_ascii_lowercase().contains(marker))
+}
+
+fn sentence_has_year_marker(text: &str) -> bool {
+    let chars = text.chars().collect::<Vec<_>>();
+    for window in chars.windows(5) {
+        if window[..4].iter().all(|ch| ch.is_ascii_digit())
+            && matches!(window[4], '년' | '-' | '–' | '—' | '.')
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn count_second_punic_subject_anchors(text: &str) -> usize {
+    let lower = text.to_ascii_lowercase();
+    let ascii_markers = [
+        "hannibal", "carthage", "roman", "rome", "scipio", "cannae", "zama", "iberia", "italy",
+        "alps", "africa", "sicily",
+    ];
+    let non_ascii_markers = [
+        "한니발",
+        "카르타고",
+        "로마",
+        "스키피오",
+        "칸나에",
+        "자마",
+        "이베리아",
+        "이탈리아",
+        "알프스",
+        "북아프리카",
+        "시칠리아",
+    ];
+    let ascii_hits = ascii_markers
+        .iter()
+        .map(|marker| count_ascii_word_marker_occurrences(&lower, marker))
+        .sum::<usize>();
+    let non_ascii_hits = non_ascii_markers
+        .iter()
+        .map(|marker| lower.match_indices(&marker.to_ascii_lowercase()).count())
+        .sum::<usize>();
+    ascii_hits + non_ascii_hits
+}
+
+fn count_ascii_word_marker_occurrences(haystack: &str, marker: &str) -> usize {
+    haystack
+        .match_indices(marker)
+        .filter(|(start, matched)| {
+            let end = *start + matched.len();
+            let before = haystack[..*start].chars().next_back();
+            let after = haystack[end..].chars().next();
+            !is_ascii_word_char(before) && !is_ascii_word_char(after)
+        })
+        .count()
+}
+
+fn historical_hidden_artifacts_present(
+    metrics: &BenchmarkEvidenceMetrics,
+    controller: Option<&ParsedControllerArtifacts>,
+) -> bool {
+    let _ = metrics;
+    controller.is_some_and(parsed_historical_hidden_artifacts_have_useful_grounding)
+}
+
+fn parsed_historical_hidden_artifacts_have_useful_grounding(
+    controller: &ParsedControllerArtifacts,
+) -> bool {
+    let valid_source_ids = controller
+        .source_cards
+        .iter()
+        .filter(|card| is_valid_http_url(&card.url))
+        .map(|card| card.id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>();
+    let valid_claim_ids = controller
+        .claim_log
+        .iter()
+        .filter(|claim| {
+            claim
+                .support_source_card_ids
+                .iter()
+                .map(|id| id.trim())
+                .any(|id| valid_source_ids.contains(id))
+                || claim.support_urls.iter().any(|url| is_valid_http_url(url))
+        })
+        .map(|claim| claim.id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<BTreeSet<_>>();
+    if valid_claim_ids.is_empty() && valid_source_ids.is_empty() {
+        return false;
+    }
+
+    let grounded_narrative_points = controller
+        .narrative_state
+        .as_ref()
+        .map(|state| {
+            [
+                state.timeline.as_slice(),
+                state.evidence_layers.as_slice(),
+                state.interpretive_tensions.as_slice(),
+                state.impacts.as_slice(),
+                state.reader_questions.as_slice(),
+                state.section_outline.as_slice(),
+                state.open_gaps.as_slice(),
+            ]
+            .into_iter()
+            .filter(|items| {
+                items.iter().any(|item| {
+                    parsed_json_item_has_grounded_refs(item, &valid_claim_ids, &valid_source_ids)
+                })
+            })
+            .count()
+        })
+        .unwrap_or_default();
+    if grounded_narrative_points >= 3 {
+        return true;
+    }
+
+    let Some(reader_quality) = controller.reader_quality.as_ref() else {
+        return false;
+    };
+    let grounded_argument_graph = reader_quality.argument_graph.as_ref().is_some_and(|graph| {
+        graph.nodes.iter().any(|node| {
+            parsed_json_item_has_grounded_refs(node, &valid_claim_ids, &valid_source_ids)
+        }) && (graph.nodes.len() >= 2
+            || graph.edges.iter().any(|edge| {
+                parsed_json_item_has_grounded_refs(edge, &valid_claim_ids, &valid_source_ids)
+            }))
+    });
+    let grounded_section_brief_count = reader_quality
+        .section_briefs
+        .iter()
+        .filter(|brief| {
+            parsed_json_item_has_grounded_refs(brief, &valid_claim_ids, &valid_source_ids)
+        })
+        .count();
+    usize::from(grounded_argument_graph) + usize::from(grounded_section_brief_count >= 2) >= 2
+}
+
+fn parsed_json_item_has_grounded_refs(
+    item: &serde_json::Value,
+    valid_claim_ids: &BTreeSet<String>,
+    valid_source_ids: &BTreeSet<String>,
+) -> bool {
+    parsed_json_string_array_intersects(item, "claim_log_ids", valid_claim_ids)
+        || parsed_json_string_array_intersects(item, "expected_claim_log_ids", valid_claim_ids)
+        || parsed_json_string_array_intersects(item, "source_card_ids", valid_source_ids)
+        || parsed_json_string_array_intersects(item, "expected_source_card_ids", valid_source_ids)
+}
+
+fn parsed_json_string_array_intersects(
+    item: &serde_json::Value,
+    key: &str,
+    valid_ids: &BTreeSet<String>,
+) -> bool {
+    item.get(key)
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .any(|id| valid_ids.contains(id))
+        })
+}
+
+fn historical_generic_open_debt_count(artifacts: &ParsedControllerArtifacts) -> usize {
+    artifacts
+        .research_debt
+        .iter()
+        .filter(|debt| debt.status != "closed")
+        .filter(|debt| historical_missing_evidence_is_generic(&debt.missing_evidence))
+        .count()
+}
+
+fn historical_missing_evidence_is_generic(missing_evidence: &str) -> bool {
+    let normalized = missing_evidence
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    normalized.is_empty()
+        || matches!(
+            normalized.as_str(),
+            "missing evidence not specified"
+                | "missing evidence"
+                | "evidence not specified"
+                | "unspecified"
+        )
+        || normalized.contains("missing evidence not specified")
 }
 
 fn is_technology_like_benchmark_category(category: &str) -> bool {
@@ -3523,6 +4208,23 @@ fn render_case_scores_csv(report: &BenchmarkRunStructuredReport) -> String {
     .map(String::from)
     .collect::<Vec<_>>();
     header.extend(RUBRIC_DIMENSIONS.iter().map(|spec| spec.key.to_string()));
+    header.extend(
+        [
+            "reader_quality_present",
+            "reader_argument_node_count",
+            "reader_argument_edge_count",
+            "reader_narrative_plan_present",
+            "reader_section_brief_count",
+            "reader_critique_present",
+            "reader_critique_metric_count",
+            "reader_critique_failed_metric_count",
+            "context_pack_reader_quality_present",
+            "context_pack_reader_section_brief_count",
+            "context_pack_reader_critique_metric_count",
+        ]
+        .into_iter()
+        .map(String::from),
+    );
     let mut lines = vec![header.join(",")];
     for case in &report.cases {
         let mut row = vec![
@@ -3571,6 +4273,23 @@ fn render_case_scores_csv(report: &BenchmarkRunStructuredReport) -> String {
                 .map(|dimension| dimension.score.to_string())
                 .unwrap_or_default()
         }));
+        row.extend([
+            case.metrics.reader_quality_present.to_string(),
+            case.metrics.reader_argument_node_count.to_string(),
+            case.metrics.reader_argument_edge_count.to_string(),
+            case.metrics.reader_narrative_plan_present.to_string(),
+            case.metrics.reader_section_brief_count.to_string(),
+            case.metrics.reader_critique_present.to_string(),
+            case.metrics.reader_critique_metric_count.to_string(),
+            case.metrics.reader_critique_failed_metric_count.to_string(),
+            case.metrics.context_pack_reader_quality_present.to_string(),
+            case.metrics
+                .context_pack_reader_section_brief_count
+                .to_string(),
+            case.metrics
+                .context_pack_reader_critique_metric_count
+                .to_string(),
+        ]);
         lines.push(row.join(","));
     }
     lines.join("\n")
@@ -3883,7 +4602,54 @@ fn normalized_host_from_url(url: &str) -> Option<String> {
 }
 
 fn is_valid_http_url(url: &str) -> bool {
-    normalized_host_from_url(url).is_some()
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => public_benchmark_domain_host(host),
+        Some(url::Host::Ipv4(ip)) => public_benchmark_ip(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => public_benchmark_ip(std::net::IpAddr::V6(ip)),
+        None => false,
+    }
+}
+
+fn public_benchmark_domain_host(host: &str) -> bool {
+    let lower = host.trim_end_matches('.').to_ascii_lowercase();
+    !lower.is_empty()
+        && lower != "localhost"
+        && !lower.ends_with(".localhost")
+        && !lower.ends_with(".local")
+        && !lower.ends_with(".internal")
+}
+
+fn public_benchmark_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            !ip.is_loopback()
+                && !ip.is_private()
+                && !ip.is_link_local()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && ip != std::net::Ipv4Addr::new(255, 255, 255, 255)
+                && octets[0] != 0
+                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
+                && !(octets[0] == 198 && (18..=19).contains(&octets[1]))
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return public_benchmark_ip(std::net::IpAddr::V4(mapped));
+            }
+            !ip.is_loopback()
+                && !ip.is_unique_local()
+                && !ip.is_unicast_link_local()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+        }
+    }
 }
 
 fn count_by_key<I>(values: I) -> BTreeMap<String, usize>
@@ -4077,6 +4843,19 @@ mod tests {
                 .to_string(),
             must_pass_checks: vec!["Provides a history-focused explanation".to_string()],
             expected_failure_modes: vec!["Shallow historical overview should fail overlay gates".to_string()],
+        }
+    }
+
+    fn second_punic_case(case_id: &str, filename: &str) -> BenchmarkCase {
+        BenchmarkCase {
+            case_id: case_id.to_string(),
+            filename: filename.to_string(),
+            title: "Hannibal and the Second Punic War".to_string(),
+            category: "historical-explanation".to_string(),
+            prompt: "Explain Hannibal and the Second Punic War with phased chronology, campaign fronts, actors, consequences, and source limits."
+                .to_string(),
+            must_pass_checks: vec!["Preserves visible campaign phase density".to_string()],
+            expected_failure_modes: vec!["Flat Hannibal overview without phase subsections should fail".to_string()],
         }
     }
 
@@ -4322,8 +5101,8 @@ mod tests {
         let result = sample_result();
         let scorecard = build_case_scorecard(&case, &result);
 
-        write_case_artifacts(&dir, "1-case", &result, &scorecard).unwrap();
-        let err = write_case_artifacts(&dir, "1-case", &result, &scorecard).unwrap_err();
+        write_case_artifacts(&dir, "1-case", &result, &scorecard, false).unwrap();
+        let err = write_case_artifacts(&dir, "1-case", &result, &scorecard, false).unwrap_err();
 
         assert!(err.to_string().contains("File exists"));
         let _ = fs::remove_dir_all(dir);
@@ -4348,7 +5127,8 @@ mod tests {
         result.final_output = None;
         let scorecard = build_case_scorecard(&case, &result);
 
-        let paths = write_case_artifacts(&dir, "1-case-failed", &result, &scorecard).unwrap();
+        let paths =
+            write_case_artifacts(&dir, "1-case-failed", &result, &scorecard, false).unwrap();
         let artifact = fs::read_to_string(paths.final_output_path.unwrap()).unwrap();
 
         assert!(artifact.contains("# Benchmark Case Failure"));
@@ -4373,7 +5153,7 @@ mod tests {
             Some("{\"version\":1,\"narrative_state\":{\"version\":1}}".to_string());
         let scorecard = build_case_scorecard(&case, &result);
 
-        let paths = write_case_artifacts(&dir, "1-case", &result, &scorecard).unwrap();
+        let paths = write_case_artifacts(&dir, "1-case", &result, &scorecard, false).unwrap();
         let final_output = fs::read_to_string(paths.final_output_path.unwrap()).unwrap();
 
         assert!(final_output.contains("## 최종 답변 (Final Answer)"));
@@ -4389,7 +5169,38 @@ mod tests {
     }
 
     #[test]
-    fn write_case_artifacts_preserves_controller_artifacts_json_with_narrative_state() {
+    fn write_case_artifacts_skips_raw_debug_artifacts_by_default() {
+        let dir = std::env::temp_dir().join(format!(
+            "research-bench-raw-debug-default-test-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let case = sample_case("case", "case.md");
+        let mut result = sample_result();
+        result.final_output = Some("## 최종 답변 (Final Answer)\n독자용 요약입니다.".to_string());
+        result.research_source_diagnostics_json = Some("{\"subject\":\"secret\"}".to_string());
+        result.research_controller_artifacts_json = Some(
+            "{\"version\":1,\"narrative_state\":{\"version\":1,\"timeline\":[{\"id\":\"N1\",\"label\":\"배경\"}]}}".to_string(),
+        );
+        result.resolved_system_prompt = Some("system prompt".to_string());
+        result.resolved_user_prompt = Some("user prompt".to_string());
+        let scorecard = build_case_scorecard(&case, &result);
+
+        let paths = write_case_artifacts(&dir, "1-case", &result, &scorecard, false).unwrap();
+
+        assert!(paths.diagnostics_json_path.is_none());
+        assert!(paths.controller_json_path.is_none());
+        assert!(paths.resolved_system_prompt_path.is_none());
+        assert!(paths.resolved_user_prompt_path.is_none());
+        assert!(!dir.join("1-case-source-diagnostics.json").exists());
+        assert!(!dir.join("1-case-controller-artifacts.json").exists());
+        assert!(!dir.join("1-case-resolved-system-prompt.md").exists());
+        assert!(!dir.join("1-case-resolved-user-prompt.md").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_case_artifacts_preserves_controller_artifacts_json_when_raw_debug_opted_in() {
         let dir = std::env::temp_dir().join(format!(
             "research-bench-controller-artifacts-retention-test-{}",
             Uuid::new_v4()
@@ -4403,7 +5214,7 @@ mod tests {
         );
         let scorecard = build_case_scorecard(&case, &result);
 
-        let paths = write_case_artifacts(&dir, "1-case", &result, &scorecard).unwrap();
+        let paths = write_case_artifacts(&dir, "1-case", &result, &scorecard, true).unwrap();
         let controller_json = fs::read_to_string(paths.controller_json_path.unwrap()).unwrap();
 
         assert!(controller_json.contains("narrative_state"));
@@ -4478,7 +5289,7 @@ mod tests {
             case: sample_case("case", "case.md"),
             artifact_stem: "1-case".to_string(),
         };
-        let execution = materialize_case_execution(&dir, &plan, sample_result(), None);
+        let execution = materialize_case_execution(&dir, &plan, sample_result(), None, false);
 
         assert_eq!(execution.result.status, "failed");
         assert_eq!(execution.result.quality_status.as_deref(), Some("failed"));
@@ -4559,6 +5370,24 @@ mod tests {
                     "section_outline": [{"id":"NS1","heading":"배경"}],
                     "open_gaps": [{"id":"NG1","gap_type":"impact","description":"추가 확인 필요"}]
                 },
+                "reader_quality": {
+                    "argument_graph": {
+                        "nodes": [{"id":"AQN1","label":"핵심 주장","claim_log_ids":["C1"],"source_card_ids":["S1"]}],
+                        "edges": [{"id":"AQE1","from_node_id":"AQN1","to_node_id":"AQN2","relation":"supports"}]
+                    },
+                    "narrative_plan": {
+                        "lead_section_id": "NS1",
+                        "section_ids": ["NS1"],
+                        "transition_ids": ["TR1"]
+                    },
+                    "section_briefs": [{"section_id":"NS1","key_point":"핵심 배경부터 제시"}],
+                    "reader_critique": {
+                        "metrics": [
+                            {"key":"clarity","label":"독자 명확성","status":"passed"},
+                            {"key":"transition","label":"전환","status":"needs_work"}
+                        ]
+                    }
+                },
                 "quality_gate": {
                     "status": "passed",
                     "failure_messages": [],
@@ -4585,7 +5414,15 @@ mod tests {
                     "narrative_interpretive_tension_count": 1,
                     "narrative_impact_count": 1,
                     "narrative_reader_question_count": 1,
-                    "narrative_open_gap_count": 1
+                    "narrative_open_gap_count": 1,
+                    "reader_quality_present": true,
+                    "reader_argument_node_count": 1,
+                    "reader_argument_edge_count": 1,
+                    "reader_narrative_plan_present": true,
+                    "reader_section_brief_count": 1,
+                    "reader_critique_present": true,
+                    "reader_critique_metric_count": 2,
+                    "reader_critique_failed_metric_count": 1
                 }
             }))
             .unwrap(),
@@ -4601,12 +5438,67 @@ mod tests {
         assert_eq!(scorecard.metrics.narrative_impact_count, 1);
         assert_eq!(scorecard.metrics.narrative_reader_question_count, 1);
         assert_eq!(scorecard.metrics.narrative_open_gap_count, 1);
+        assert!(scorecard.metrics.reader_quality_present);
+        assert_eq!(scorecard.metrics.reader_argument_node_count, 1);
+        assert_eq!(scorecard.metrics.reader_argument_edge_count, 1);
+        assert!(scorecard.metrics.reader_narrative_plan_present);
+        assert_eq!(scorecard.metrics.reader_section_brief_count, 1);
+        assert!(scorecard.metrics.reader_critique_present);
+        assert_eq!(scorecard.metrics.reader_critique_metric_count, 2);
+        assert_eq!(scorecard.metrics.reader_critique_failed_metric_count, 1);
+        assert!(scorecard.metrics.context_pack_reader_quality_present);
+        assert_eq!(scorecard.metrics.context_pack_reader_section_brief_count, 1);
+        assert_eq!(
+            scorecard.metrics.context_pack_reader_critique_metric_count,
+            2
+        );
         assert!(scorecard.metrics.context_pack_narrative_state_present);
         assert!(scorecard
             .warnings
             .iter()
             .any(|warning| warning.contains("narrative diagnostics")));
+        assert!(scorecard
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("reader-quality diagnostics")));
         assert_eq!(scorecard.metrics.supported_claim_count, 1);
+    }
+
+    #[test]
+    fn parsed_controller_artifacts_default_missing_reader_critique_metric_status() {
+        let controller = serde_json::from_value::<ParsedControllerArtifacts>(json!({
+            "version": 1,
+            "source_cards": [],
+            "claim_log": [],
+            "conflict_map": [],
+            "research_debt": [],
+            "reader_quality": {
+                "reader_critique": {
+                    "metrics": [
+                        {
+                            "key": "clarity",
+                            "label": "Reader clarity"
+                        },
+                        {
+                            "key": "momentum",
+                            "label": "Reader momentum",
+                            "status": null
+                        }
+                    ]
+                }
+            }
+        }))
+        .expect("controller artifacts should deserialize");
+
+        let metrics = &controller
+            .reader_quality
+            .as_ref()
+            .and_then(|reader_quality| reader_quality.reader_critique.as_ref())
+            .expect("reader critique should be present")
+            .metrics;
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0].status, "unknown");
+        assert_eq!(metrics[1].status, "unknown");
     }
 
     #[test]
@@ -4643,6 +5535,7 @@ mod tests {
             max_iterations: 2,
             cli_launch_mode: None,
             ai_task_timeout_secs: 3600,
+            include_raw_debug_artifacts: false,
         };
         let report = build_structured_run_report(
             &args,
@@ -4930,6 +5823,229 @@ mod tests {
     }
 
     #[test]
+    fn historical_scorecard_warns_when_hidden_artifacts_and_richness_are_shallow() {
+        let case = historical_case("case-history-warning", "case-history-warning.md");
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n이 사건은 특정 시기의 위기 속에서 일어났고 주요 행위자와 지역이 얽혀 있었습니다. 배경에는 재정 압박과 군사 문제가 있었고 그 결과 제도 변화가 뒤따랐습니다. 사료의 한계와 해석 차이도 있지만, 전체적으로는 위기 대응의 사례로 볼 수 있습니다.\n\n# 검증 부록\n## 출처 감사\n- 백과사전 개요\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- passed\n"
+                .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(scorecard
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("historical richness remains shallow")));
+        assert!(scorecard.warnings.iter().any(|warning| {
+            warning.contains("historical hidden planning artifacts are missing")
+        }));
+    }
+
+    #[test]
+    fn second_punic_scorecard_flags_shallow_phase_density_regression() {
+        let case = second_punic_case("case-second-punic-flat", "second-punic-flat.md");
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n한니발은 로마를 위협했지만 결국 전쟁은 로마의 승리로 끝났다. 218 BCE와 216 BCE가 중요했다는 점만 간단히 언급하고, 카르타고와 로마의 긴 전개는 한 문단으로 압축한다.\n\n# 검증 부록\n## 출처 감사\n- 사료 번역본\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- passed\n"
+                .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(scorecard.critical_flags.iter().any(|flag| {
+            flag.key == "historical_campaign_phase_density_floor" && flag.triggered
+        }));
+        assert!(scorecard
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("second punic war phase-density floor missed") }));
+    }
+
+    #[test]
+    fn second_punic_scorecard_accepts_dense_phase_density() {
+        let case = second_punic_case("case-second-punic-rich", "second-punic-rich.md");
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n이 전쟁은 장기 원정과 다전선 전환을 단계별로 읽어야 한다.\n\n### Phase 1. Saguntum Crisis (219-218 BCE)\nHannibal과 Carthage 지휘부는 Iberia에서 Saguntum 위기를 전면전으로 바꾸었고 Rome의 외교 대응은 실패했다.\n\n### Phase 2. Alpine Invasion (218 BCE)\nHannibal은 Alps를 넘어 Italy로 진입했고 Roman 집정관들은 북부 전선을 급히 재편했다.\n\n### Phase 3. Trasimene And Cannae (217-216 BCE)\nHannibal은 Trasimene과 Cannae에서 Roman 야전군을 무너뜨리며 동맹과 지휘 체계에 충격을 주었다.\n\n### Phase 4. Roman Endurance (215-212 BCE)\nRome은 Italy와 Sicily에서 다전선 동원을 유지하며 Carthage의 단기 결전을 피했다.\n\n### Phase 5. Iberian Reversal (211-206 BCE)\nScipio는 Iberia에서 Carthage의 기반을 흔들었고 Hannibal의 전략적 깊이를 줄였다.\n\n### Phase 6. African Decision (204-202 BCE)\nScipio의 Africa 상륙은 Hannibal의 귀환과 Zama 이전의 최종 전환을 만들었다.\n\n### Phase 7. Settlement (201 BCE)\n201 BCE 강화는 Carthage를 제약하고 Rome의 지중해 우위를 굳히는 결과로 이어졌다.\n\n### 동시대 비교\n같은 시기 다른 전쟁과 비교하면 Rome의 회복 방식이 더 선명해진다.\n\n### 전개 순서와 해석\n연대기적 국면과 후대 해석을 분리해 읽어야 한다.\n\n### 사료 층위\nPolybius, Livy, modern scholarship의 층위를 나눠 봐야 한다.\n\n### 쟁점 지도\n전략적 genius와 구조적 자원 격차 사이의 해석 경쟁이 남는다.\n\n### 후대 영향\nRoman expansion과 Mediterranean order 재편이라는 장기 효과가 뒤따랐다.\n\n### 후속 탐색 질문\n동맹 유지 비용과 Carthaginian internal politics를 더 따져볼 필요가 있다.\n\n# 검증 부록\n## 출처 감사\n- 사료 번역본\n- 현대 연구\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- passed\n"
+                .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(scorecard.critical_flags.iter().all(|flag| {
+            flag.key != "historical_campaign_phase_density_floor" || !flag.triggered
+        }));
+        assert!(
+            scorecard.metrics.second_punic_phase_subsection_count
+                >= SECOND_PUNIC_WAR_MIN_PHASE_SUBSECTIONS
+        );
+    }
+
+    #[test]
+    fn second_punic_scorecard_exempts_all_punic_comparison_without_centered_focus() {
+        let case = BenchmarkCase {
+            case_id: "case-all-punic-comparison".to_string(),
+            filename: "all-punic-comparison.md".to_string(),
+            title: "Compare the First, Second, and Third Punic Wars".to_string(),
+            category: "historical-explanation".to_string(),
+            prompt: "Provide a comparative overview across all three Punic Wars, noting how the Second Punic War differs within the wider Roman-Carthaginian sequence.".to_string(),
+            must_pass_checks: vec!["Keeps comparative framing".to_string()],
+            expected_failure_modes: vec!["Should not be benchmarked as a centered Hannibal phase-density case".to_string()],
+        };
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n세 차례 포에니 전쟁은 각각 해전 중심의 초기 충돌, 한니발이 끼어든 중간 전쟁, 그리고 카르타고 파괴로 이어진 최종 전쟁으로 비교할 수 있다.\n\n# 검증 부록\n## 출처 감사\n- 비교 개관\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- passed\n"
+                .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(!is_second_punic_benchmark_case(&case));
+        assert!(scorecard.critical_flags.iter().all(|flag| {
+            flag.key != "historical_campaign_phase_density_floor" || !flag.triggered
+        }));
+    }
+
+    #[test]
+    fn second_punic_scorecard_keeps_centered_comparative_exception() {
+        let case = BenchmarkCase {
+            case_id: "case-second-punic-centered-comparison".to_string(),
+            filename: "second-punic-centered-comparison.md".to_string(),
+            title: "Compare all Punic Wars with emphasis on Hannibal and the Second Punic War".to_string(),
+            category: "historical-explanation".to_string(),
+            prompt: "Across the Punic Wars, keep the comparison but center the campaign narrative on Hannibal and the Second Punic War.".to_string(),
+            must_pass_checks: vec!["Keeps centered Second Punic focus".to_string()],
+            expected_failure_modes: vec!["Centered Hannibal comparison should still hit the phase-density benchmark floor".to_string()],
+        };
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n한니발의 전역을 비교 틀 안에 두더라도 한 문단 요약으로 끝내면 안 된다. 218 BCE, 216 BCE, 202 BCE만 짧게 언급하고 넘어가면 중심 전역의 국면 밀도가 무너진다.\n\n# 검증 부록\n## 출처 감사\n- 비교 개관\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- passed\n"
+                .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(is_second_punic_benchmark_case(&case));
+        assert!(scorecard.critical_flags.iter().any(|flag| {
+            flag.key == "historical_campaign_phase_density_floor" && flag.triggered
+        }));
+    }
+
+    #[test]
+    fn historical_scorecard_warns_when_hidden_planning_refs_use_private_source_urls() {
+        let case = historical_case(
+            "case-history-private-ref-warning",
+            "case-history-private.md",
+        );
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n역사적 전환점의 핵심은 사건 자체보다 그것을 어떻게 읽느냐에 있습니다.\n\n### 동시대 비교\n같은 시기 다른 지역 사례와 비교합니다.\n\n### 전개 순서와 해석\n전개 순서와 해석을 분리합니다.\n\n### 사료 층위\n사료 층위의 한계를 드러냅니다.\n\n# 검증 부록\n## 출처 감사\n- private metadata source\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- passed\n"
+                .to_string(),
+        );
+        result.research_controller_artifacts_json = Some(
+            r#"{
+  "version": 1,
+  "source_cards": [
+    {
+      "id": "S1",
+      "url": "http://169.254.169.254/latest/meta-data/",
+      "title": "private metadata",
+      "source_class": "official_or_primary"
+    }
+  ],
+  "claim_log": [
+    {
+      "id": "C1",
+      "claim": "Private URL must not ground planning.",
+      "support_source_card_ids": ["S1"]
+    }
+  ],
+  "reader_quality": {
+    "argument_graph": {
+      "nodes": [
+        {"id": "N1", "label": "배경", "claim_log_ids": ["C1"], "source_card_ids": ["S1"]},
+        {"id": "N2", "label": "해석", "claim_log_ids": ["C1"], "source_card_ids": ["S1"]}
+      ],
+      "edges": []
+    },
+    "section_briefs": [
+      {"section_id": "S1", "key_point": "전개", "claim_log_ids": ["C1"], "source_card_ids": ["S1"]},
+      {"section_id": "S2", "key_point": "해석", "claim_log_ids": ["C1"], "source_card_ids": ["S1"]}
+    ]
+  },
+  "research_debt": []
+}
+"#
+            .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(scorecard.warnings.iter().any(|warning| {
+            warning.contains("historical hidden planning artifacts are missing")
+        }));
+    }
+
+    #[test]
+    fn benchmark_url_guard_rejects_non_public_ip_ranges() {
+        for raw_url in [
+            "http://127.0.0.1/private",
+            "http://10.0.0.5/internal",
+            "http://100.64.0.1/carrier-nat",
+            "http://198.18.0.1/benchmark-net",
+            "http://0.0.0.0/unspecified",
+            "http://255.255.255.255/broadcast",
+            "http://[::1]/private",
+            "http://[fd00::1]/private",
+            "http://[fe80::1]/link-local",
+            "http://[::ffff:127.0.0.1]/mapped-loopback",
+        ] {
+            assert!(
+                !is_valid_http_url(raw_url),
+                "non-public benchmark URL should be rejected: {raw_url}"
+            );
+        }
+        assert!(is_valid_http_url("https://docs.vllm.ai/en/latest/"));
+    }
+
+    #[test]
+    fn historical_scorecard_warns_on_generic_open_debt_placeholder() {
+        let case = historical_case("case-history-debt-warning", "case-history-debt-warning.md");
+        let mut result = sample_result();
+        result.final_output = Some(
+            "## 최종 답변\n역사적 전환점의 핵심은 사건 자체보다 그것을 어떤 층위의 증거와 해석으로 읽느냐에 있습니다.\n\n### 동시대 비교\n같은 시기 다른 지역 사례와 나란히 놓아 보면 이 변화가 예외인지 구조적 흐름인지 더 분명해집니다.\n\n### 전개 순서와 해석\n먼저 사건의 전개 순서를 짚고, 그다음 후대 연구가 이 흐름을 어떻게 해석하는지 구분해 읽어야 합니다.\n\n### 사료 층위\n동시대 기록, 후대 서술, 물질 자료, 현대 연구는 서로 다른 강점과 한계를 보여 줍니다.\n\n### 쟁점 지도\n핵심 쟁점은 동기의 해석, 정책의 효과, 그리고 승자의 서사가 얼마나 개입했는가입니다.\n\n# 검증 부록\n## 출처 감사\n- 사료 번역본\n\n## 주장 로그\n- C1 supported by S1\n\n## 품질 게이트\n- failed\n"
+                .to_string(),
+        );
+        result.research_controller_artifacts_json = Some(
+            r#"{
+  "version": 1,
+  "source_cards": [],
+  "claim_log": [],
+  "conflict_map": [],
+  "research_debt": [
+    {
+      "id": "D1",
+      "severity": "medium",
+      "missing_evidence": "missing evidence not specified",
+      "candidate_queries": ["phase-specific primary source"],
+      "next_check_actions": ["name the missing phase explicitly"],
+      "status": "open"
+    }
+  ]
+}"#
+            .to_string(),
+        );
+
+        let scorecard = build_case_scorecard(&case, &result);
+
+        assert!(scorecard.warnings.iter().any(|warning| {
+            warning
+                .contains("historical open debt still uses generic missing-evidence placeholders")
+        }));
+    }
+
+    #[test]
     fn historical_genre_richness_recognizes_natural_korean_history_section_headings() {
         let case = historical_case(
             "case-history-natural-headings",
@@ -5159,6 +6275,7 @@ mod tests {
             max_iterations: 2,
             cli_launch_mode: None,
             ai_task_timeout_secs: 3600,
+            include_raw_debug_artifacts: false,
         };
         let report = build_structured_run_report(
             &args,
@@ -5217,6 +6334,7 @@ mod tests {
             max_iterations: 2,
             cli_launch_mode: None,
             ai_task_timeout_secs: 3600,
+            include_raw_debug_artifacts: false,
         };
         let report = build_structured_run_report(
             &args,

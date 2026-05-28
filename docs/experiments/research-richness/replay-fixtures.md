@@ -28,6 +28,8 @@ Each frozen case bundle must contain exactly:
 
 Missing files are fixture-setup failures, not research failures.
 
+Frozen bundles may omit the additive `reader_quality` field inside `*-controller-artifacts.json`. Replay compatibility requires those older envelopes to continue parsing as `reader_quality = null`.
+
 ## Failure Contract
 
 - Pre-finalization live bundles may be `quality_status=untrusted`.

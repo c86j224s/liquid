@@ -63,6 +63,7 @@ score_source = "research_bench_structured_rubric"
 fixture_scores_are_pipeline_evidence_only = true
 replay_scores_are_deterministic_validation_evidence = true
 live_scores_are_non_deterministic_quality_measurements = true
+reader_quality_metrics_are_observable_only = true
 
 [[gate_ladder]]
 id = "artifact-review"

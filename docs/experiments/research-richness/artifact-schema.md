@@ -12,6 +12,7 @@ Envelope:
   "claim_log": [],
   "conflict_map": [],
   "research_debt": [],
+  "reader_quality": {},
   "quality_gate": {},
   "warnings": []
 }
@@ -25,8 +26,16 @@ Fields:
 - `conflict_map`: `id`, `topic`, `conflicting_claim_ids`, `source_card_ids`, `resolution_status`, `resolution_note`, `promoted_to_debt`
 - `research_debt`: `id`, `severity`, `failed_gate`, `missing_evidence`, `required_source_class`, `candidate_queries`, `next_check_actions`, `status`
 - `narrative_state`: optional outline continuity artifact only; never evidence
+- `reader_quality`: optional reader-planning artifact only; never evidence
 - `quality_gate`: `status`, `failure_messages`, `unsupported_claim_count`, `unresolved_conflict_count`, `open_debt_count`
 - `warnings`: parser, compatibility, or finalization warnings persisted after deterministic repair
+
+Canonical placement:
+
+- `narrative_state.event_cards` is the canonical location for historical/process phase dossiers.
+- Root-level `event_cards`, if a model emits it, is compatibility noise and should not be treated as the trusted scaffold or as evidence.
+- Hidden scaffold depth and visible report richness are independent checks: a visible report can read well while failing because the hidden scaffold lacks grounded causal/interpretive structure, and a hidden scaffold cannot compensate for a flat reader-facing final answer.
+- Reader Quality metrics are currently observable diagnostics, not weighted score inputs; they explain narrative planning coverage without replacing evidence gates or the genre/section richness dimension.
 
 Finalization notes:
 
@@ -38,6 +47,8 @@ Backward compatibility:
 
 - event-only JSON from the earlier controller remains readable because missing fields default empty
 - older artifacts without `narrative_state` deserialize as `None`
+- older artifacts without `reader_quality` deserialize as `None`
+- backward compatibility stays additive, but strict/high historical runs are expected to populate at least one of these hidden planning artifacts with useful depth instead of leaving both empty
 
 ## `narrative_state`
 
@@ -66,6 +77,7 @@ Additive schema stored inside `research_controller_artifacts_json`:
 Field roles:
 
 - `timeline`: chronology scaffolding with stable event IDs and optional expected claim/source references
+- `event_cards`: phased historical/process scaffold rows with `label`, `timeframe`, `actors`, `region_or_front`, `trigger`, `development`, `outcome`, optional `claim_log_ids`, optional `source_ids`, optional per-card `causal_spine`, optional per-card `interpretive_layers`, `confidence`, and `open_questions`
 - `actors`: institutions, people, or groups the explanation should keep visible
 - `causal_chain`: outline-only cause/effect sequence for the reader path
 - `evidence_layers`: plan for presenting support from source-backed facts to interpretation and limits; not support itself
@@ -86,8 +98,14 @@ Evidence boundary:
 
 - Narrative State is not reader-facing output
 - Narrative State does not satisfy URL counts, authoritative source counts, supported-claim requirements, or conflict/debt resolution
+- for strict/high historical runs, Narrative State is expected to carry useful chronology or phase structure plus supporting planning detail such as evidence layers, interpretive tensions, impacts, reader questions, or open gaps; broad historical process reports additionally require several event cards to act as phase dossiers rather than flat summaries
+- for Hannibal / Second Punic War-class strict/high runs, grounded `event_cards` may also be used during finalization to restore visible campaign phase subsections, date anchors, and actor/front continuity when the draft collapses into a flat summary; this repair is structural only and does not weaken Source Card / Claim Log evidence gates
 - `evidence_layers`, `interpretive_tensions`, `impacts`, `reader_questions`, and `open_gaps` may guide prompts and finalization order only when Source Cards and Claim Log support the resulting prose
-- reader-facing narrative labels require supported Claim Log refs; Source Card ID existence alone is not enough
+- strict/high gates and finalizer-visible event-card prose require direct supported `claim_log_ids`; `source_ids` stay supplemental context and Source Card ID overlap alone is not enough
+- `causal_spine` items use language-neutral `step_type` values such as `precondition`, `forcing_factor`, `decision_point`, `execution`, `contingent_moment`, `outcome`, and `forward_pressure`; each item carries its own `description`, `epistemic_status`, `reasoning`, `limits`, `claim_log_ids`, and `source_ids`
+- `interpretive_layers` items use `layer_type` values such as `diplomacy`, `operations`, `logistics_economics`, `geography_front`, `domestic_politics`, and `historiography_limits`; each item carries its own `interpretation`, `epistemic_status`, `reasoning`, `limits`, `claim_log_ids`, and `source_ids`
+- `epistemic_status` distinguishes `fact`, `interpretation`, `inference`, `hypothesis`, `contested`, and `limit`. Claim refs are evidence anchors, not truth guarantees: interpretations must say how the cited facts are being read, and inference may go one step beyond only when the reasoning chain is explicit and non-contradictory. Hypotheses/limits may appear as caveats but should not carry the main conclusion.
+- strict broad-history validation counts grounded causal spine steps and grounded interpretive layers per card; many one-sentence claim-linked cards should fail rather than pass as narrative depth
 - transient repair search hints are prompt-only leads; their URLs do not count as adopted evidence until normal adoption or independent fetch
 - validation may reject reader-facing output that echoes repair-hint labels or uses hint provenance as if it were final evidence
 
@@ -95,6 +113,52 @@ Final-output hygiene:
 
 - committed benchmark `*-final-output.md` files are sanitized reader-facing artifacts
 - `controller-artifacts.json` retains `narrative_state` and the machine-readable continuity details used by prompts and finalization
+
+## `reader_quality`
+
+Additive schema stored inside `research_controller_artifacts_json`:
+
+```json
+{
+  "argument_graph": {
+    "nodes": [],
+    "edges": []
+  },
+  "narrative_plan": {
+    "lead_section_id": "optional",
+    "section_ids": [],
+    "transition_ids": [],
+    "narrative_arc": "optional",
+    "ending_note": "optional"
+  },
+  "section_briefs": [],
+  "reader_critique": {
+    "summary": "optional",
+    "strengths": [],
+    "weaknesses": [],
+    "improvement_priorities": [],
+    "metrics": []
+  }
+}
+```
+
+Field roles:
+
+- `argument_graph.nodes`: compact reader-facing claim clusters or supporting lines that point back to `claim_log_ids` and `source_card_ids`
+- `argument_graph.edges`: compact relationships between argument nodes such as `supports`, `qualifies`, or `contrasts`
+- `narrative_plan`: lightweight ordering metadata that references existing `section_outline` / `transition_plan` IDs rather than duplicating prose
+- `section_briefs`: per-section reader goal plus a compact key point, again anchored to claim/source IDs
+- `reader_critique`: sanitized reader-facing critique only; use short strengths, weaknesses, improvement priorities, and compact metric rows
+
+Compatibility and hygiene notes:
+
+- `reader_quality` is optional and defaults to `None` for older artifacts and replay bundles
+- strict/high historical runs are expected to use `reader_quality` when it is the main hidden planning scaffold; empty `reader_quality` is fine only if `narrative_state` already carries useful historical planning depth
+- `reader_quality` is part of the same single hidden artifact envelope; there is no second hidden block
+- compaction clears or truncates `section_briefs`, then `argument_graph` / `reader_critique`, before sacrificing evidence ledgers
+- prompt-like content, raw diagnostics, provider payloads, and controller/prompt JSON are rejected or stripped during normalization
+- committed benchmark `*-final-output.md` files do not keep `reader_quality`; the hidden artifact block is stripped before promotion
+- open historical debt carried in the same envelope must not use generic placeholders such as `missing evidence not specified`; name the exact missing phase, actor, place/front, transition, source layer, or interpretive gap
 
 ## `research_source_diagnostics_json`
 
@@ -127,6 +191,15 @@ Context-packing additive narrative fields:
 - `narrative_reader_question_count`
 - `narrative_open_gap_count`
 - `narrative_omitted_chars`
+- `reader_quality_present`
+- `reader_argument_node_count`
+- `reader_argument_edge_count`
+- `reader_narrative_plan_present`
+- `reader_section_brief_count`
+- `reader_critique_present`
+- `reader_critique_metric_count`
+- `reader_critique_failed_metric_count`
+- `reader_quality_omitted_chars`
 
 Prompt and finalization behavior:
 
