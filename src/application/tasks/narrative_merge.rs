@@ -1,0 +1,20 @@
+#[allow(unused_imports)]
+pub(super) use liquid_research_classic::{
+    build_actionable_conflict_debt, close_research_debts_for_gate, compact_narrative_text,
+    conflict_candidate_queries, conflict_debt_id, conflict_needs_deterministic_debt_promotion,
+    conflict_next_check_actions, conflict_status_is_terminally_resolved,
+    enrich_narrative_state_from_event_cards, event_card_key_contains, event_card_phase_terms,
+    event_cards_represent_same_scope, join_conflict_refs, merge_actionable_conflict_debt,
+    merge_conflict_debt_list, merge_event_cards_preserving_existing_scope,
+    merge_narrative_open_gaps, merge_narrative_state, merge_reader_quality,
+    merge_research_controller_artifacts,
+    merge_research_controller_artifacts_with_trusted_source_urls, narrative_card_label,
+    narrative_card_outcome_or_label, narrative_card_trigger_or_label,
+    narrative_event_card_claim_reference_count, narrative_event_card_reference_score,
+    narrative_event_card_richness_score, narrative_gap_converted_to_debt, narrative_gap_is_closed,
+    normalize_deferred_conflicts_to_actionable_debt, normalize_event_card_key, push_unique_warning,
+    reconcile_research_debt_snapshot, research_quality_gate_from_failures,
+    resync_derived_narrative_debt, should_preserve_existing_event_cards,
+    strip_untrusted_planning_evidence_refs, sync_research_debts_for_gate,
+    trusted_artifact_merge_source_urls, upsert_derived_narrative_debt, upsert_research_debt,
+};

@@ -1,0 +1,12 @@
+[package]
+name = "liquid-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+liquid-files = { path = "../liquid-files" }
+liquid-protocol = { path = "../liquid-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }

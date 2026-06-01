@@ -1525,6 +1525,17 @@ dependencies = [
  "dotenvy",
  "futures",
  "html2md",
+ "liquid-acquisition",
+ "liquid-files",
+ "liquid-html-report",
+ "liquid-protocol",
+ "liquid-research-artifacts",
+ "liquid-research-classic",
+ "liquid-research-core",
+ "liquid-runtime",
+ "liquid-server",
+ "liquid-storage-sqlite",
+ "liquid-workspace",
  "pulldown-cmark",
  "readability",
  "reqwest 0.13.2",
@@ -1536,6 +1547,140 @@ dependencies = [
  "tower-http 0.5.2",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "liquid-acquisition"
+version = "0.1.0"
+dependencies = [
+ "html2md",
+ "liquid-protocol",
+ "liquid-research-artifacts",
+ "readability",
+ "reqwest 0.13.2",
+ "scraper",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "liquid-bench"
+version = "0.8.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "dotenvy",
+ "liquid",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "liquid-files"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "serde",
+]
+
+[[package]]
+name = "liquid-html-report"
+version = "0.1.0"
+
+[[package]]
+name = "liquid-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+]
+
+[[package]]
+name = "liquid-research-artifacts"
+version = "0.1.0"
+
+[[package]]
+name = "liquid-research-classic"
+version = "0.8.0"
+dependencies = [
+ "liquid-protocol",
+ "liquid-research-artifacts",
+ "liquid-research-core",
+ "url",
+]
+
+[[package]]
+name = "liquid-research-core"
+version = "0.1.0"
+dependencies = [
+ "liquid-protocol",
+ "liquid-research-artifacts",
+ "scraper",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "liquid-runtime"
+version = "0.1.0"
+dependencies = [
+ "liquid-protocol",
+ "reqwest 0.13.2",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "liquid-server"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "chrono",
+ "futures",
+ "liquid-files",
+ "liquid-protocol",
+ "liquid-research-core",
+ "liquid-workspace",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http 0.5.2",
+ "url",
+]
+
+[[package]]
+name = "liquid-storage-sqlite"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "liquid-files",
+ "liquid-workspace",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "liquid-workspace"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "liquid-files",
+ "liquid-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

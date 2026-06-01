@@ -1,0 +1,10 @@
+[package]
+name = "liquid-research-classic"
+version = "0.8.0"
+edition = "2021"
+
+[dependencies]
+liquid-protocol = { path = "../liquid-protocol" }
+liquid-research-artifacts = { path = "../liquid-research-artifacts" }
+liquid-research-core = { path = "../liquid-research-core" }
+url = { workspace = true }

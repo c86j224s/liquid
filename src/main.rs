@@ -3,30 +3,21 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::fs;
 use tokio::sync::{broadcast, Notify};
 
-mod ai_runtime;
-mod app;
-mod cli_launcher;
+mod application;
 mod config;
-mod db;
+mod contracts;
 mod diagnostics;
-mod drawers;
-mod engine_presets;
-mod files;
-mod models;
-mod pi_runtime;
-mod research;
 mod research_design;
-mod research_quality;
-mod research_sources;
-mod scraping;
+mod server;
 mod state;
-mod tasks;
 #[cfg(test)]
 mod test_support;
-mod translate;
 
+use application::ports::classic_research_implementation;
+use application::server_adapters::build_server_context;
 use config::{setup_data_dir, Args};
-use db::setup_db;
+use liquid_server::build_router;
+use liquid_storage_sqlite::setup_db;
 use state::AppState;
 
 #[tokio::main]
@@ -45,6 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ai_workers = args.ai_workers.max(1);
     let local_ai_workers = args.local_ai_workers.max(1);
     let ai_task_timeout_secs = args.ai_task_timeout_secs.max(60);
+    let research_implementation = classic_research_implementation();
+    let research_implementation_id = match args.research_implementation {
+        config::ResearchImplementationSelection::Classic => research_implementation.id(),
+    };
     let state = Arc::new(AppState {
         db,
         data_dir: data_dir.clone(),
@@ -56,28 +51,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_ai_workers,
         ai_task_timeout_secs,
         cli_launch_mode: args.cli_launch_mode,
+        research_implementation_id,
+        research_implementation,
         benchmark_fixture: None,
     });
-    tasks::spawn_ai_queue_workers(Arc::clone(&state), ai_workers, local_ai_workers);
+    application::tasks::spawn_ai_queue_workers(Arc::clone(&state), ai_workers, local_ai_workers);
 
-    let app = app::build_router(state);
+    let app = build_router(build_server_context(state));
 
     let addr_str = format!("{}:{}", args.host, args.port);
     println!(
-        "listening on {} with data in {} using {} cloud/CLI worker(s), {} local worker(s)",
+        "listening on {} with data in {} using {} cloud/CLI worker(s), {} local worker(s), research implementation {}",
         addr_str,
         data_dir.display(),
         ai_workers,
-        local_ai_workers
+        local_ai_workers,
+        research_implementation_id
     );
     diagnostics::log_lifecycle_event(
         "startup",
         &format!(
-            "listening on {} data_dir={} ai_workers={} local_ai_workers={}",
+            "listening on {} data_dir={} ai_workers={} local_ai_workers={} research_implementation={}",
             addr_str,
             data_dir.display(),
             ai_workers,
-            local_ai_workers
+            local_ai_workers,
+            research_implementation_id
         ),
     );
     let listener = tokio::net::TcpListener::bind(addr_str).await?;

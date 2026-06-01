@@ -13,6 +13,18 @@ Reader Quality is now an additive hidden artifact layer inside the existing cont
 
 For repeatable improvement passes, use [improvement-run.sh](./improvement-run.sh). It runs `research_bench` with the standard strict settings and, when `--preserve-dir` is provided, copies only commit-safe CSV and sanitized final-output artifacts while leaving aggregate markdown, raw diagnostics, prompts, and machine-readable artifact JSON in the raw run directory.
 
+## Modularization Contract Freeze
+
+Before workspace extraction, the benchmark surface is frozen at these boundaries:
+
+- Binary entry point: `cargo run --bin research_bench -- ...`
+- Long-form CLI flags: `--cases-dir`, `--runs-dir`, `--label`, `--mode`, `--replay-fixture-root`, `--data-dir`, `--model-input`, `--engine-name`, `--model-name`, `--research-intensity`, `--quality-depth`, `--max-iterations`, `--cli-launch-mode`, `--ai-task-timeout-secs`, `--include-raw-debug-artifacts`
+- Mode contract: `fixture`, `live`, and `replay` remain the only benchmark modes
+- Output contract: per-run `.md`, local-only `.json/.csv/.ndjson`, and reviewed sanitized `*-final-output.md` artifacts keep their current filenames and meanings
+- Hygiene contract: fixture/replay can write under `docs/experiments/research-richness/runs/`; live mode defaults to an OS temp directory when `--runs-dir` or `LIQUID_BENCH_RUNS_DIR` is not provided
+- Sanitized artifact contract: raw diagnostics, provider payloads, resolved prompts, controller-artifact JSON, local DBs, and generated raw run directories stay out of committed artifacts
+- Dependency direction for modularization: `server -> service -> {research-core, runtime, acquisition, storage} -> contracts`, and `bench -> {research-core, runtime, acquisition, contracts}` without a `server` dependency
+
 ## Current Checkpoint
 
 - Deterministic replay pass: `docs/experiments/research-richness/runs/artifact-finalization-replay-20260515T133816Z.md`

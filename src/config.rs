@@ -1,6 +1,40 @@
-use crate::cli_launcher::CliLaunchMode;
 use clap::Parser;
+use liquid_runtime::cli_launcher::CliLaunchMode;
 use std::path::{Path as StdPath, PathBuf};
+use std::str::FromStr;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ResearchImplementationSelection {
+    #[default]
+    Classic,
+}
+
+impl ResearchImplementationSelection {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+        }
+    }
+}
+
+impl std::fmt::Display for ResearchImplementationSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ResearchImplementationSelection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim() {
+            "classic" => Ok(Self::Classic),
+            other => Err(format!(
+                "unsupported research implementation '{other}'; expected 'classic'"
+            )),
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -19,6 +53,12 @@ pub(crate) struct Args {
     pub(crate) ai_task_timeout_secs: u64,
     #[arg(long, env = "LIQUID_CLI_LAUNCH_MODE", default_value_t = CliLaunchMode::Auto)]
     pub(crate) cli_launch_mode: CliLaunchMode,
+    #[arg(
+        long,
+        env = "LIQUID_RESEARCH_IMPLEMENTATION",
+        default_value_t = ResearchImplementationSelection::Classic
+    )]
+    pub(crate) research_implementation: ResearchImplementationSelection,
 }
 
 pub(crate) fn setup_data_dir(
@@ -90,5 +130,30 @@ mod tests {
     #[test]
     fn test_cli_launch_mode_rejects_invalid_value() {
         assert!("unsafe".parse::<CliLaunchMode>().is_err());
+    }
+
+    #[test]
+    fn test_research_implementation_defaults_to_classic() {
+        assert_eq!(
+            ResearchImplementationSelection::default(),
+            ResearchImplementationSelection::Classic
+        );
+        assert_eq!(
+            ResearchImplementationSelection::Classic.to_string(),
+            "classic"
+        );
+    }
+
+    #[test]
+    fn test_research_implementation_parses_only_classic() {
+        assert_eq!(
+            "classic"
+                .parse::<ResearchImplementationSelection>()
+                .unwrap(),
+            ResearchImplementationSelection::Classic
+        );
+        assert!("next-gen"
+            .parse::<ResearchImplementationSelection>()
+            .is_err());
     }
 }

@@ -1,74 +1,38 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
-const MAX_EXTERNAL_SKILL_BYTES: u64 = 32 * 1024;
 const EXTERNAL_SKILL_ENV: &str = "LIQUID_RESEARCH_HTML_SKILL_PATH";
 
-pub(crate) const BUILT_IN_INTERACTIVE_REPORT_PROMPT: &str = r#"
-[OUTPUT FORMAT: INTERACTIVE HTML REPORT]
-1. Role: Senior Data Scientist & Frontend Engineer.
-2. Content: Exhaustive, analytical, and visually stunning.
-3. Tech: Standalone HTML file, no external JS/CSS files. Use Tailwind CSS via CDN.
-4. Visuals: Use SVG for ALL diagrams, flowcharts, and charts. No image files.
-5. Interactivity: 
-   - Floating Table of Contents.
-   - Interactive Tabs for multi-perspective analysis.
-   - Accordions for technical details.
-   - Code blocks with "Copy" buttons.
-6. Design: Match "Liquid Glass" aesthetic (translucent dark theme, blur effects, #6366f1 accents).
-7. Output: Output ONLY the source code starting with <!DOCTYPE html>.
-"#;
-
 pub(crate) fn build_html_design_prompt() -> String {
-    match load_external_skill_prompt() {
-        Some(skill) => format!(
-            "{}\n\n{}",
-            BUILT_IN_INTERACTIVE_REPORT_PROMPT,
-            format_external_skill_prompt(&skill)
-        ),
-        None => BUILT_IN_INTERACTIVE_REPORT_PROMPT.to_string(),
-    }
+    let configured_path = configured_html_skill_path();
+    liquid_html_report::build_html_design_prompt(configured_path.as_deref())
 }
 
-fn load_external_skill_prompt() -> Option<String> {
-    let raw_path = std::env::var(EXTERNAL_SKILL_ENV).ok()?;
-    let path = expand_home_path(raw_path.trim());
-    let metadata = fs::metadata(&path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_EXTERNAL_SKILL_BYTES {
-        return None;
-    }
-
-    fs::read_to_string(path)
-        .ok()
-        .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
+pub(crate) fn redact_html_design_prompt_for_storage(system_prompt: &str) -> String {
+    liquid_html_report::redact_external_skill_from_prompt(system_prompt)
 }
 
-fn format_external_skill_prompt(skill: &str) -> String {
-    format!(
-        "[EXPERIMENTAL HTML DESIGN SKILL]\n\
-The following local skill content is an active, temporary design guide for this run.\n\
-- Treat it as design/output guidance only, not as source evidence.\n\
-- If it conflicts with research accuracy, source audit, privacy, or output-only HTML rules, those higher-level rules win.\n\
-- Apply the visual/document-structure guidance without copying prior generated artifacts.\n\
-\n\
-{}",
-        skill
-    )
+pub(crate) fn hydrate_html_design_prompt_for_execution(system_prompt: &str) -> String {
+    let configured_path = configured_html_skill_path();
+    liquid_html_report::hydrate_external_skill_in_prompt(system_prompt, configured_path.as_deref())
 }
 
 fn expand_home_path(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(path)
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    liquid_html_report::expand_home_path(path, home.as_deref())
+}
+
+fn configured_html_skill_path() -> Option<PathBuf> {
+    let raw_path = std::env::var(EXTERNAL_SKILL_ENV).ok()?;
+    Some(expand_home_path(raw_path.trim()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::{
+        fs,
+        sync::{Mutex, OnceLock},
+    };
     use uuid::Uuid;
 
     fn env_lock() -> &'static Mutex<()> {
@@ -101,6 +65,54 @@ mod tests {
         assert!(prompt.contains("[OUTPUT FORMAT: INTERACTIVE HTML REPORT]"));
         assert!(prompt.contains("[EXPERIMENTAL HTML DESIGN SKILL]"));
         assert!(prompt.contains("Use component diagrams."));
+
+        std::env::remove_var(EXTERNAL_SKILL_ENV);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn html_design_prompt_includes_directory_skill_when_configured() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("liquid-skill-dir-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(dir.join("references")).unwrap();
+        fs::write(dir.join("SKILL.md"), "# Skill\n\nUse sequence diagrams.").unwrap();
+        fs::write(
+            dir.join("references/component-patterns.md"),
+            "Use evidence markers.",
+        )
+        .unwrap();
+        std::env::set_var(EXTERNAL_SKILL_ENV, &dir);
+
+        let prompt = build_html_design_prompt();
+
+        assert!(prompt.contains("[EXPERIMENTAL HTML DESIGN SKILL]"));
+        assert!(prompt.contains("Use sequence diagrams."));
+        assert!(prompt.contains("[HTML DESIGN REFERENCE BUNDLE]"));
+        assert!(prompt.contains("Use evidence markers."));
+
+        std::env::remove_var(EXTERNAL_SKILL_ENV);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn external_skill_prompt_is_redacted_for_storage_and_hydrated_from_configured_path() {
+        let _guard = env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("liquid-skill-redact-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let skill_path = dir.join("SKILL.md");
+        fs::write(&skill_path, "# Skill\n\nUse secret design notes safely.").unwrap();
+        std::env::set_var(EXTERNAL_SKILL_ENV, &skill_path);
+
+        let prompt = format!(
+            "system prefix\n\n{}\n\n[RESEARCH CONTROLLER CONTRACT v22]\ncontroller",
+            build_html_design_prompt()
+        );
+        let redacted = redact_html_design_prompt_for_storage(&prompt);
+        assert!(redacted.contains("[external-html-report-skill-redacted]"));
+        assert!(!redacted.contains("Use secret design notes safely."));
+
+        let hydrated = hydrate_html_design_prompt_for_execution(&redacted);
+        assert!(hydrated.contains("Use secret design notes safely."));
 
         std::env::remove_var(EXTERNAL_SKILL_ENV);
         let _ = fs::remove_dir_all(dir);

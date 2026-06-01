@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Liquid 모듈화 리팩토링 로드맵</title>
+<style>
+:root{--bg:#0f172a;--panel:#111c34;--panel2:#172642;--ink:#e5edf8;--muted:#9fb0ca;--line:#31435f;--accent:#7dd3fc;--ok:#86efac;--warn:#fde68a;--risk:#fca5a5;--code:#d8b4fe}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:linear-gradient(135deg,#0b1020,#12213d 55%,#0f172a);color:var(--ink);line-height:1.6}main{max-width:1180px;margin:0 auto;padding:40px 20px 70px}header{display:grid;gap:12px;margin-bottom:28px}.eyebrow{color:var(--accent);font-weight:700;letter-spacing:.08em;text-transform:uppercase}h1{font-size:clamp(30px,5vw,58px);line-height:1.05;margin:0}h2{margin:0 0 16px;font-size:28px}h3{margin:0 0 8px;font-size:18px}.lead{max-width:860px;color:var(--muted);font-size:18px}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.card{background:rgba(17,28,52,.86);border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 18px 50px rgba(0,0,0,.22)}.span-4{grid-column:span 4}.span-6{grid-column:span 6}.span-8{grid-column:span 8}.span-12{grid-column:span 12}.metric{font-size:34px;font-weight:800;color:var(--ok)}.label{color:var(--muted);font-size:13px}.map{display:grid;gap:12px}.node{border:1px solid var(--line);background:var(--panel2);border-radius:14px;padding:14px}.node strong{color:#fff}.node code,.chip{color:var(--code);background:#25153f;border:1px solid #47306d;border-radius:999px;padding:2px 8px;font-size:12px}.flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.arrow{color:var(--accent);font-weight:800}.ok{border-color:#287b4f}.warn{border-color:#8a6a1e}.risk{border-color:#884444}.tag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 9px;margin:3px;color:var(--muted);font-size:12px}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}table{width:100%;border-collapse:collapse;overflow:hidden;border-radius:12px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px;vertical-align:top}th{color:#fff;background:#1b2b4b}td{color:var(--muted)}details{border:1px solid var(--line);border-radius:14px;padding:12px;background:rgba(15,23,42,.58)}summary{cursor:pointer;font-weight:700;color:#fff}pre{white-space:pre-wrap;background:#08111f;border:1px solid var(--line);border-radius:12px;padding:14px;color:#c7d2fe;overflow:auto}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.tabs button{background:#16243f;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:8px 12px;cursor:pointer}.tabs button.active{border-color:var(--accent);color:var(--accent)}.tab-panel{display:none}.tab-panel.active{display:block}.small{font-size:13px;color:var(--muted)}@media(max-width:800px){.span-4,.span-6,.span-8{grid-column:span 12}.flow{display:grid}.arrow{display:none}}</style>
+</head>
+<body>
+<main>
+<header>
+<div class="eyebrow">Liquid architecture brief · 2026-05-29</div>
+<h1>모듈을 떼고 붙일 수 있게 만드는<br/>급진적이되 안전한 리팩토링 지도</h1>
+<p class="lead">이번 wave의 핵심은 “한 번에 서버를 갈아엎기”가 아니라, 서버/저장소/획득/런타임/리서치 품질을 crate 경계로 분리하고 루트 모듈은 얇은 shim 또는 orchestration으로 남기는 것입니다.</p>
+</header>
+<section class="grid">
+<div class="card span-4"><div class="metric">6</div><div class="label">새/강화된 책임 경계</div></div>
+<div class="card span-4"><div class="metric">7/7</div><div class="label">fixture smoke completed</div></div>
+<div class="card span-4"><div class="metric">0</div><div class="label">최종 Sentinel blocking finding</div></div>
+</section>
+<section class="card span-12" style="margin-top:16px">
+<h2>현재 모듈 지도</h2>
+<div class="flow">
+<div class="node ok"><strong>Liquid Server</strong><br><code>src/app.rs</code><br><span class="small">HTTP route / 상태 조립</span></div><div class="arrow">→</div>
+<div class="node ok"><strong>Storage</strong><br><code>crates/liquid-storage-sqlite</code><br><span class="small">DB migration, SQLite repositories</span></div><div class="arrow">→</div>
+<div class="node ok"><strong>Acquisition</strong><br><code>crates/liquid-acquisition</code><br><span class="small">source model, source acquisition, pure scraping helpers</span></div><div class="arrow">→</div>
+<div class="node ok"><strong>Research Core</strong><br><code>crates/liquid-research-core</code><br><span class="small">quality, artifact, narrative gates</span></div><div class="arrow">→</div>
+<div class="node ok"><strong>Runtime</strong><br><code>crates/liquid-runtime</code><br><span class="small">Codex/CLI launcher, Pi runtime guard, engine preset policy</span></div>
+</div>
+</section>
+<section class="grid" style="margin-top:16px">
+<div class="card span-8">
+<h2>추출 원칙</h2>
+<ul>
+<li><strong>네트워크 경계는 보수적으로:</strong> 스크래핑 crate에는 순수 helper를 우선 이동하고 guarded fetch/task wiring은 루트에 남겼습니다.</li>
+<li><strong>계약이 민감한 prompt는 고정:</strong> <code>src/research.rs</code>는 이동 대신 fingerprint snapshot test로 회귀를 막았습니다.</li>
+<li><strong>저장소는 adapter부터:</strong> 전체 handler SQL을 한 번에 없애지 않고 DB/repository seam을 먼저 확보했습니다.</li>
+<li><strong>벤치/아티팩트 정책 보존:</strong> raw benchmark output은 repo 밖에 두고 smoke summary만 검증 근거로 사용했습니다.</li>
+</ul>
+</div>
+<div class="card span-4">
+<h2>검증 요약</h2>
+<pre>cargo fmt --check
+git diff --check
+cargo check --workspace --all-targets
+cargo test -q --workspace
+research_bench fixture smoke
+
+Cases: 7
+Completed: 7
+Quality: passed=6, untrusted=1</pre>
+</div>
+</section>
+<section class="card" style="margin-top:16px">
+<h2>책임별 상세</h2>
+<div class="tabs" role="tablist">
+<button class="active" data-tab="storage">저장소</button><button data-tab="acq">획득/스크래핑</button><button data-tab="runtime">런타임</button><button data-tab="research">리서치 품질</button><button data-tab="left">남은 삽</button>
+</div>
+<div id="storage" class="tab-panel active"><table><tr><th>경계</th><th>내용</th><th>근거 파일</th></tr><tr><td>SQLite 저장소 crate</td><td>DB 초기화와 bounded repository helper를 서버 handler 밖으로 이동.</td><td><code>crates/liquid-storage-sqlite</code>, <code>src/db.rs</code>, <code>src/files.rs</code></td></tr></table></div>
+<div id="acq" class="tab-panel"><table><tr><th>경계</th><th>내용</th><th>보안 판단</th></tr><tr><td>소스 획득</td><td>ResearchSource 모델과 source acquisition 로직을 crate화.</td><td>raw artifact 정책 유지.</td></tr><tr><td>순수 스크래핑 helper</td><td>HTML/Markdown/URL 문자열 helper를 acquisition crate로 이동.</td><td>실제 network fetch는 루트 guarded path에 남겨 SSRF surface 확장을 피함.</td></tr></table></div>
+<div id="runtime" class="tab-panel"><table><tr><th>경계</th><th>내용</th><th>강화점</th></tr><tr><td>CLI/Pi runtime</td><td>외부 모델 실행 경로를 <code>liquid-runtime</code>으로 분리.</td><td>Pi <code>web_fetch</code>가 private IP, metadata endpoint, IPv4-mapped IPv6, redirect 우회를 차단.</td></tr></table></div>
+<div id="research" class="tab-panel"><table><tr><th>경계</th><th>내용</th><th>계약</th></tr><tr><td>research core</td><td>quality gate, narrative artifact, benchmark-visible artifact 판정 로직을 core crate화.</td><td>기존 Source Cards, Claim Log, Research Debt, Quality Gate 흐름 보존.</td></tr><tr><td>prompt contract</td><td>본문 이동 대신 fingerprint snapshot으로 prompt drift 감시.</td><td><code>prompt_text_contract_snapshot_matrix_is_frozen</code></td></tr></table></div>
+<div id="left" class="tab-panel"><table><tr><th>후보</th><th>왜 남겼나</th><th>다음 조건</th></tr><tr><td><code>engine_presets</code> HTTP shell</td><td>순수 policy는 이동 완료. handler, SQL hydration, test endpoint는 서버 계약과 결합.</td><td>API response/mutation snapshot 후 분리.</td></tr><tr><td><code>ai_runtime</code></td><td>prompt/redaction/model execution이 결합되어 있음.</td><td>prompt-text/redaction snapshot harness 후 분리.</td></tr><tr><td><code>tasks.rs</code></td><td>queue, cancellation, research finalization이 큰 orchestration으로 결합.</td><td>lifecycle state machine을 먼저 문서화.</td></tr><tr><td><code>research_bench</code></td><td>public summary와 private artifact loader가 섞여 있지만 벤치 계약 drift 위험 큼.</td><td>fixture snapshot 추가 후 renderer/loader 분리.</td></tr></table></div>
+</section>
+<section class="grid" style="margin-top:16px">
+<div class="card span-6 warn"><h2>주의 지점</h2><p>Historical fixture 하나는 여전히 <code>untrusted</code>입니다. 이는 이번 구조 리팩토링의 실패라기보다 연구 품질 게이트가 역사 narrative richness에 엄격하게 남아 있음을 보여주는 기준점입니다.</p></div>
+<div class="card span-6 ok"><h2>현재 결론</h2><p>이번 브랜치는 “crate seam 확보”라는 구조 목표에 대해 커밋 가능한 녹색 경계에 도달했고, engine preset 순수 정책도 runtime crate로 이동했습니다. 더 큰 분해는 별도 wave로 잡는 편이 안전합니다.</p></div>
+</section>
+<section class="card" style="margin-top:16px">
+<h2>Traceability</h2>
+<p class="small">주요 근거: <code>Cargo.toml</code>, <code>crates/liquid-research-core</code>, <code>crates/liquid-storage-sqlite</code>, <code>crates/liquid-acquisition</code>, <code>crates/liquid-runtime</code>, <code>docs/architecture/modular-refactor-roadmap.md</code>, 최종 fixture smoke summary.</p>
+</section>
+</main>
+<script>
+document.querySelectorAll('.tabs button').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');document.getElementById(btn.dataset.tab).classList.add('active')}));
+</script>
+</body>
+</html>

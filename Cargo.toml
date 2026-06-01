@@ -4,22 +4,57 @@ version = "0.8.0"
 edition = "2021"
 default-run = "liquid"
 
+[workspace]
+default-members = [".", "crates/liquid-bench"]
+members = [
+    "crates/liquid-acquisition",
+    "crates/liquid-bench",
+    "crates/liquid-files",
+    "crates/liquid-html-report",
+    "crates/liquid-protocol",
+    "crates/liquid-server",
+    "crates/liquid-research-classic",
+    "crates/liquid-research-artifacts",
+    "crates/liquid-research-core",
+    "crates/liquid-runtime",
+    "crates/liquid-storage-sqlite",
+    "crates/liquid-workspace",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+scraper = "0.19.0"
+url = "2.5.8"
+
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1.0", features = ["full"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros", "chrono"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 pulldown-cmark = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 async-stream = "0.3"
 uuid = { version = "1.0", features = ["v4"] }
 reqwest = { version = "0.13.2", features = ["json"] }
-url = "2.5.8"
+url = { workspace = true }
 readability = "0.3.0"
 html2md = "0.2.15"
-scraper = "0.19.0"
+scraper = { workspace = true }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 dotenvy = "0.15"
+liquid-protocol = { path = "crates/liquid-protocol" }
+liquid-research-artifacts = { path = "crates/liquid-research-artifacts" }
+liquid-acquisition = { path = "crates/liquid-acquisition" }
+liquid-files = { path = "crates/liquid-files" }
+liquid-html-report = { path = "crates/liquid-html-report" }
+liquid-research-classic = { path = "crates/liquid-research-classic" }
+liquid-research-core = { path = "crates/liquid-research-core" }
+liquid-runtime = { path = "crates/liquid-runtime" }
+liquid-server = { path = "crates/liquid-server" }
+liquid-storage-sqlite = { path = "crates/liquid-storage-sqlite" }
+liquid-workspace = { path = "crates/liquid-workspace" }

@@ -201,14 +201,14 @@ for (const token of taskControllerSafetyTokens) {
   assert(tasksSource.includes(token), `tasks.js must preserve malformed research artifact guard: ${token}`);
 }
 
-const filesRustSource = readProjectFile('src/files.rs');
+const filesRustSource = readProjectFile('src/application/file_tags.rs');
 assert(
   filesRustSource.includes('"[AI-Research]" => vec!["Research"]'),
-  'src/files.rs must normalize [AI-Research] to the Research system tag',
+  'src/application/file_tags.rs must normalize [AI-Research] to the Research system tag',
 );
 assert(
   !filesRustSource.includes('"[AI-Research]" => vec!["AI Research"]'),
-  'src/files.rs must not create the old AI Research system tag for [AI-Research]',
+  'src/application/file_tags.rs must not create the old AI Research system tag for [AI-Research]',
 );
 
 const styleSource = readProjectFile('static/style.css');
