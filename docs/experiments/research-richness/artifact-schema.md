@@ -20,7 +20,7 @@ Envelope:
 
 Fields:
 
-- `events`: controller stage history preserved across retries
+- `events`: controller stage history preserved across retries; `narrative_enrichment` is the bounded post-persistence/pre-finalization stage for additive narrative/artifact enrichment strategies
 - `source_cards`: `id`, `url`, `title`, `source_class`, `accessed_at`, `extracted_facts`, `limitation`, `diagnostics_ref`, `confidence`
 - `claim_log`: `id`, `claim`, `claim_type`, `support_source_card_ids`, `support_urls`, `confidence`, `uncertainty_note`, `needs_verification`
 - `conflict_map`: `id`, `topic`, `conflicting_claim_ids`, `source_card_ids`, `resolution_status`, `resolution_note`, `promoted_to_debt`
@@ -32,7 +32,7 @@ Fields:
 
 Canonical placement:
 
-- `narrative_state.event_cards` is the canonical location for historical/process phase dossiers.
+- `narrative_state.event_cards` is the canonical location for historical/process phase dossiers. Event-card enrichment is a controller sub-pipeline, not only prompt wording: it runs after artifact parsing/persistence and before finalization when a strict/high historical strategy applies.
 - Root-level `event_cards`, if a model emits it, is compatibility noise and should not be treated as the trusted scaffold or as evidence.
 - Hidden scaffold depth and visible report richness are independent checks: a visible report can read well while failing because the hidden scaffold lacks grounded causal/interpretive structure, and a hidden scaffold cannot compensate for a flat reader-facing final answer.
 - Reader Quality metrics are currently observable diagnostics, not weighted score inputs; they explain narrative planning coverage without replacing evidence gates or the genre/section richness dimension.
@@ -42,6 +42,7 @@ Finalization notes:
 - trusted save uses finalized visible output, not the raw model draft
 - the finalizer rebuilds `Final Answer`, `Source Audit`, `Claim Log`, `Limits/Conflicts/Research Debt`, and `Quality Gate` from persisted artifacts plus source diagnostics
 - hidden machine-readable JSON remains appended after the visible appendix and does not count as visible compliance by itself
+- narrative enrichment reads persisted artifacts and writes back only sanitized enriched artifacts, warnings, and specific research debt; raw enrichment prompts, raw model output, provider payloads, source diagnostics, and controller artifact dumps remain local-only
 
 Backward compatibility:
 
@@ -78,6 +79,7 @@ Field roles:
 
 - `timeline`: chronology scaffolding with stable event IDs and optional expected claim/source references
 - `event_cards`: phased historical/process scaffold rows with `label`, `timeframe`, `actors`, `region_or_front`, `trigger`, `development`, `outcome`, optional `claim_log_ids`, optional `source_ids`, optional per-card `causal_spine`, optional per-card `interpretive_layers`, `confidence`, and `open_questions`
+  - In strict/high historical runs, weak cards may be passed through the bounded historical event-card enrichment strategy. The strategy may fill missing phase fields and nested causal/interpretive detail, but only when the proposed fields cite existing supported Claim Log IDs and existing Source Card IDs. Invented IDs or ungrounded details are dropped and recorded as specific research debt.
 - `actors`: institutions, people, or groups the explanation should keep visible
 - `causal_chain`: outline-only cause/effect sequence for the reader path
 - `evidence_layers`: plan for presenting support from source-backed facts to interpretation and limits; not support itself
