@@ -5,6 +5,7 @@ use liquid_protocol::{
 use liquid_research_core::normalize_absolute_public_evidence_url;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 const DEVELOPMENT_THIN_CHAR_THRESHOLD: usize = 80;
 const PHASE_FIELD_THIN_CHAR_THRESHOLD: usize = 8;
@@ -944,10 +945,334 @@ fn unsafe_enrichment_text_reason(value: &str) -> Option<&'static str> {
         "<system-reminder",
         "BEGIN PRIVATE",
     ];
-    unsafe_markers
+    if unsafe_markers
         .iter()
         .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
-        .then_some("unsafe prompt/provider/URL marker")
+    {
+        return Some("unsafe prompt/provider/URL marker");
+    }
+    contains_private_host_literal(value).then_some("private/internal host literal")
+}
+
+fn contains_private_host_literal(value: &str) -> bool {
+    if contains_contextual_bare_private_host_reference(value) {
+        return true;
+    }
+    if contains_blocked_bracketed_host(value) {
+        return true;
+    }
+    value
+        .split(|ch: char| !host_candidate_char(ch))
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            host_token_is_blocked(token)
+                || token
+                    .split(':')
+                    .any(|part| part.contains('.') && host_token_is_blocked(part))
+        })
+}
+
+fn contains_contextual_bare_private_host_reference(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let host_labels = ["host", "hostname", "source", "url", "origin", "endpoint"];
+    let bare_hosts = ["internal", "metadata"];
+
+    host_labels.iter().any(|label| {
+        bare_hosts.iter().any(|host| {
+            contextual_bare_host_value_match(&lower, label, ':', host)
+                || contextual_bare_host_value_match(&lower, label, '=', host)
+        })
+    })
+}
+
+fn contextual_bare_host_value_match(
+    haystack: &str,
+    label: &str,
+    separator: char,
+    host: &str,
+) -> bool {
+    for label_form in [
+        label.to_string(),
+        format!("\"{label}\""),
+        format!("'{label}'"),
+    ] {
+        let mut search_offset = 0usize;
+        while let Some(rel_idx) = haystack[search_offset..].find(&label_form) {
+            let idx = search_offset + rel_idx;
+            if !contextual_label_start_ok(haystack, idx)
+                || !contextual_label_end_ok(haystack, idx + label_form.len())
+            {
+                search_offset = idx + 1;
+                continue;
+            }
+            let after_label = &haystack[idx + label_form.len()..];
+            let after_label_trimmed = after_label.trim_start();
+            if !after_label_trimmed.starts_with(separator) {
+                search_offset = idx + 1;
+                continue;
+            }
+            let after_separator = &after_label_trimmed[separator.len_utf8()..];
+            let trimmed = after_separator.trim_start();
+            let had_space_after_separator = trimmed.len() != after_separator.len();
+            if let Some(rest) = trimmed.strip_prefix(host) {
+                if bare_host_value_boundary(rest, had_space_after_separator) {
+                    return true;
+                }
+            }
+            if let Some(quoted_rest) = trimmed
+                .strip_prefix('"')
+                .or_else(|| trimmed.strip_prefix('\''))
+            {
+                let quote = trimmed.chars().next().unwrap_or_default();
+                if let Some(rest) = quoted_rest.strip_prefix(host) {
+                    if let Some(after_quote) = rest.strip_prefix(quote) {
+                        return quoted_bare_host_value_boundary(after_quote);
+                    }
+                }
+            }
+            search_offset = idx + 1;
+        }
+    }
+    false
+}
+
+fn contextual_label_start_ok(haystack: &str, idx: usize) -> bool {
+    idx == 0
+        || haystack[..idx]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !contextual_identifier_char(ch))
+}
+
+fn contextual_label_end_ok(haystack: &str, idx: usize) -> bool {
+    idx >= haystack.len()
+        || haystack[idx..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !contextual_identifier_char(ch))
+}
+
+fn contextual_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn bare_host_value_boundary(rest: &str, had_space_after_separator: bool) -> bool {
+    if rest.is_empty() {
+        return true;
+    }
+    let first = rest.chars().next().unwrap_or_default();
+    if matches!(
+        first,
+        ',' | ';' | '.' | ')' | ']' | '}' | '"' | '\'' | '/' | '\\'
+    ) {
+        return true;
+    }
+    if first.is_whitespace() {
+        if !had_space_after_separator {
+            return true;
+        }
+        let trimmed = rest.trim_start();
+        return trimmed.is_empty()
+            || trimmed.starts_with(|ch: char| {
+                matches!(
+                    ch,
+                    ',' | ';' | '.' | ')' | ']' | '}' | '"' | '\'' | '/' | '\\'
+                )
+            });
+    }
+    false
+}
+
+fn quoted_bare_host_value_boundary(rest: &str) -> bool {
+    rest.is_empty()
+        || rest.starts_with(|ch: char| {
+            matches!(
+                ch,
+                ',' | ';' | '.' | ')' | ']' | '}' | '"' | '\'' | '/' | '\\' | ':'
+            ) || ch.is_whitespace()
+        })
+}
+
+fn contains_blocked_bracketed_host(value: &str) -> bool {
+    let mut remaining = value;
+    while let Some(open) = remaining.find('[') {
+        let after_open = &remaining[open + 1..];
+        let Some(close) = after_open.find(']') else {
+            return false;
+        };
+        let host = &after_open[..close];
+        if host_token_is_blocked(host) {
+            return true;
+        }
+        remaining = &after_open[close + 1..];
+    }
+    false
+}
+
+fn host_candidate_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | ':' | '[' | ']' | 'x' | 'X')
+}
+
+fn host_token_is_blocked(token: &str) -> bool {
+    let token = token.trim();
+    if token.is_empty() {
+        return false;
+    }
+    let has_numeric_port = !token.contains("::")
+        && token.rsplit_once(':').is_some_and(|(_, port)| {
+            !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit())
+        });
+    let bracketed_ipv6 = token
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']').map(|(host, _)| host));
+    let mut host = if let Some(host) = bracketed_ipv6 {
+        host
+    } else if has_numeric_port {
+        token
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(token)
+    } else {
+        token
+    };
+    host = host
+        .trim_matches(|ch: char| matches!(ch, '[' | ']' | '.' | ':'))
+        .trim();
+    if host.is_empty() {
+        return false;
+    }
+    let lower_host = host.to_ascii_lowercase();
+    if has_numeric_port && matches!(lower_host.as_str(), "internal" | "metadata" | "localhost") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return blocked_private_ip(ip);
+    }
+    if host.as_bytes()[0].is_ascii_digit()
+        && (host.contains('.') || single_token_ipv4_literal_like(host))
+    {
+        if host.contains('.') && private_ipv4_shorthand_prefix(host) {
+            return true;
+        }
+        return parse_ipv4_style_host(host)
+            .map(|ip| blocked_private_ip(IpAddr::V4(ip)))
+            .unwrap_or(false);
+    }
+    private_domain_literal(host)
+}
+
+fn parse_ipv4_style_host(host: &str) -> Option<Ipv4Addr> {
+    if host.is_empty()
+        || !host.as_bytes()[0].is_ascii_digit()
+        || !host
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() || ch == 'x' || ch == 'X' || ch == '.')
+    {
+        return None;
+    }
+    if !host.contains('.') {
+        let value = parse_ipv4_number(host)?;
+        return Some(Ipv4Addr::from(value));
+    }
+    let parts = host
+        .split('.')
+        .map(parse_ipv4_number)
+        .collect::<Option<Vec<_>>>()?;
+    if parts.len() != 4 || parts.iter().any(|part| *part > 255) {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        parts[0] as u8,
+        parts[1] as u8,
+        parts[2] as u8,
+        parts[3] as u8,
+    ))
+}
+
+fn single_token_ipv4_literal_like(token: &str) -> bool {
+    token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"))
+        .is_some_and(|rest| rest.len() >= 8 && rest.chars().all(|ch| ch.is_ascii_hexdigit()))
+        || (token.len() >= 8 && token.chars().all(|ch| ch.is_ascii_digit()))
+        || (token.len() >= 9
+            && token.starts_with('0')
+            && token.chars().all(|ch| matches!(ch, '0'..='7')))
+}
+
+fn private_ipv4_shorthand_prefix(host: &str) -> bool {
+    let parts = host.split('.').collect::<Vec<_>>();
+    let first = parts.first().and_then(|part| parse_ipv4_number(part));
+    let second = parts.get(1).and_then(|part| parse_ipv4_number(part));
+    match (first, second) {
+        (Some(10), _) | (Some(127), _) | (Some(0), _) | (Some(169), Some(254)) => true,
+        (Some(192), Some(168)) => true,
+        (Some(172), Some(value)) if (16..=31).contains(&value) => true,
+        (Some(100), Some(value)) if (64..=127).contains(&value) => true,
+        (Some(198), Some(value)) if (18..=19).contains(&value) => true,
+        _ => false,
+    }
+}
+
+fn private_domain_literal(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost"
+        || host == "metadata.google.internal"
+        || host == "instance-data.ec2.internal"
+        || host.ends_with(".localhost")
+        || host.ends_with(".internal")
+        || host.ends_with(".local")
+        || host.ends_with(".localdomain")
+        || host.ends_with(".home.arpa")
+}
+
+fn parse_ipv4_number(value: &str) -> Option<u32> {
+    if value.is_empty() {
+        return None;
+    }
+    let (digits, radix) = if let Some(rest) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        (rest, 16)
+    } else if value.len() > 1 && value.starts_with('0') {
+        (&value[1..], 8)
+    } else {
+        (value, 10)
+    };
+    u32::from_str_radix(digits, radix).ok()
+}
+
+fn blocked_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => blocked_private_ipv4(ip),
+        IpAddr::V6(ip) => blocked_private_ipv6(ip),
+    }
+}
+
+fn blocked_private_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_unspecified()
+        || ip == Ipv4Addr::new(255, 255, 255, 255)
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+}
+
+fn blocked_private_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return blocked_private_ipv4(mapped);
+    }
+    let segments = ip.segments();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
 }
 
 fn reject_unsafe_enrichment_text(
@@ -1477,6 +1802,132 @@ mod tests {
             .debts
             .iter()
             .any(|debt| debt.id.contains("unsafe-text")));
+    }
+
+    #[test]
+    fn ordinary_internal_prose_is_accepted() {
+        let mut artifacts = artifacts_with_card(weak_card());
+        let report = merge_historical_event_card_enrichment_json(
+            &mut artifacts,
+            0,
+            r#"{
+              "development":"러시아 함대 압박과 한국 병참로 확보가 결합되었고, internal supply coordination 문제와 내부 정치 논쟁이 겹치며 다음 국면의 결정을 밀어붙였다.",
+              "claim_log_ids":["C1"],
+              "source_ids":["S1"]
+            }"#,
+        );
+        let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
+
+        assert_ne!(card.development.as_deref(), Some("짧다"));
+        assert!(
+            report
+                .debts
+                .iter()
+                .all(|debt| !debt.id.contains("unsafe-text")),
+            "ordinary prose should not be rejected: {report:?}"
+        );
+    }
+
+    #[test]
+    fn source_or_resource_internal_prose_is_accepted() {
+        for accepted_text in [
+            "source: internal court memoranda shaped the debate and changed how ministers framed the next phase.",
+            "resource: internal mobilization records explain why the next offensive slowed despite public victories.",
+        ] {
+            let mut artifacts = artifacts_with_card(weak_card());
+            let raw = serde_json::json!({
+                "development": format!("러시아 함대 압박과 한국 병참로 확보가 결합되었다. {accepted_text} 이 문장은 충분히 길어 기존 설명을 대체하려 한다."),
+                "claim_log_ids": ["C1"],
+                "source_ids": ["S1"]
+            })
+            .to_string();
+
+            let report = merge_historical_event_card_enrichment_json(&mut artifacts, 0, &raw);
+            let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
+            assert_ne!(card.development.as_deref(), Some("짧다"));
+            assert!(
+                report
+                    .debts
+                    .iter()
+                    .all(|debt| !debt.id.contains("unsafe-text")),
+                "contextual prose should not be rejected: {accepted_text}; report={report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_contextual_private_host_fragments_are_rejected() {
+        for unsafe_text in [
+            r#"json={"source":"metadata"}"#,
+            r#""host": "internal""#,
+            r#"endpoint='metadata'"#,
+            r#"url = "internal""#,
+        ] {
+            let mut artifacts = artifacts_with_card(weak_card());
+            let raw = serde_json::json!({
+                "development": format!("러시아 함대 압박과 한국 병참로 확보가 결합되었다. {unsafe_text} 이 문장은 충분히 길어 기존 설명을 대체하려 한다."),
+                "claim_log_ids": ["C1"],
+                "source_ids": ["S1"]
+            })
+            .to_string();
+
+            let report = merge_historical_event_card_enrichment_json(&mut artifacts, 0, &raw);
+            let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
+            assert_eq!(card.development.as_deref(), Some("짧다"));
+            assert!(
+                report
+                    .debts
+                    .iter()
+                    .any(|debt| debt.id.contains("unsafe-text")),
+                "quoted host-like fragment should be rejected: {unsafe_text}; report={report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_like_internal_references_are_rejected() {
+        for unsafe_text in [
+            "10.0.0.1/latest 내부 주소를 확인해야 한다.",
+            "source:192.168.1.1 라우터 진단을 확인해야 한다.",
+            "fd00::1/latest 내부 IPv6 주소를 확인해야 한다.",
+            "::ffff:127.0.0.1 로컬 매핑 주소를 확인해야 한다.",
+            "2130706433/latest 단일 숫자 IPv4 주소를 확인해야 한다.",
+            "0x7f000001/latest 16진 IPv4 주소를 확인해야 한다.",
+            "017700000001/latest 8진 IPv4 주소를 확인해야 한다.",
+            "db.internal:8080 내부 도메인을 확인해야 한다.",
+            "service.local 내부 로컬 도메인을 확인해야 한다.",
+            "source:internal 메모를 그대로 남긴다.",
+            "source: internal.",
+            "host=metadata 진단 조각을 그대로 옮긴다.",
+            "internal:8080 포트가 열린 내부 호스트를 확인해야 한다.",
+            "metadata:443 메타데이터 포트 흔적을 남긴다.",
+            "[fd00::1]:443 내부 IPv6 포트 주소를 확인해야 한다.",
+            "source:[fd00::1]:443 접두사가 붙은 내부 IPv6 주소를 확인해야 한다.",
+            "json={\"source\":\"[fd00::1]:443\"} 구조화된 내부 IPv6 주소를 확인해야 한다.",
+            "source:[::ffff:127.0.0.1]:8080 IPv4 매핑 내부 IPv6 주소를 확인해야 한다.",
+            "127.1 짧은 IPv4 로컬 표기를 확인해야 한다.",
+            "10.1 짧은 IPv4 사설 표기를 확인해야 한다.",
+            "192.168.1 짧은 IPv4 사설 표기를 확인해야 한다.",
+        ] {
+            let mut artifacts = artifacts_with_card(weak_card());
+            let raw = serde_json::json!({
+                "development": format!("러시아 함대 압박과 한국 병참로 확보가 결합되었다. {unsafe_text} 이 문장은 충분히 길어 기존 설명을 대체하려 한다."),
+                "claim_log_ids": ["C1"],
+                "source_ids": ["S1"]
+            })
+            .to_string();
+
+            let report = merge_historical_event_card_enrichment_json(&mut artifacts, 0, &raw);
+            let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
+            assert_eq!(card.development.as_deref(), Some("짧다"));
+            assert!(
+                report
+                    .debts
+                    .iter()
+                    .any(|debt| debt.id.contains("unsafe-text")),
+                "unsafe host text should be rejected: {unsafe_text}; report={report:?}"
+            );
+        }
     }
 
     #[test]
