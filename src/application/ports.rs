@@ -79,6 +79,7 @@ pub(crate) struct ModelRuntimeRequest<'a> {
     pub(crate) research_intensity: Option<&'a str>,
     pub(crate) fallback_used: bool,
     pub(crate) fallback_reason: Option<&'a str>,
+    pub(crate) persist_resolved_prompts: bool,
 }
 
 pub(crate) trait ModelRuntime: Send + Sync {

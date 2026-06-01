@@ -92,6 +92,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
                 research_intensity: task.research_intensity.as_deref(),
                 fallback_used: task.fallback_used.as_deref() == Some("true"),
                 fallback_reason: task.fallback_reason.as_deref(),
+                persist_resolved_prompts: true,
             })
             .await;
         handle_task_completion(
@@ -169,6 +170,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
                 research_intensity: task.research_intensity.as_deref(),
                 fallback_used: task.fallback_used.as_deref() == Some("true"),
                 fallback_reason: task.fallback_reason.as_deref(),
+                persist_resolved_prompts: true,
             })
             .await;
 

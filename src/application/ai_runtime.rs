@@ -167,6 +167,7 @@ pub(crate) async fn execute_task_logic(
     research_intensity: Option<&str>,
     fallback_used: bool,
     fallback_reason: Option<&str>,
+    persist_resolved_prompts: bool,
 ) -> Option<String> {
     let safe_user_prompt = sanitize_input(user_prompt);
     let safe_research_subject_prompt = research_subject_prompt.map(sanitize_input);
@@ -230,6 +231,7 @@ pub(crate) async fn execute_task_logic(
             &final_system_prompt,
             &safe_user_prompt,
             allow_web_search,
+            persist_resolved_prompts,
         )
         .await;
     }
@@ -292,7 +294,9 @@ pub(crate) async fn execute_task_logic(
             }
         }
     }
-    if !store_resolved_prompts(state, task_id, &final_system_prompt, &final_user_prompt).await {
+    if persist_resolved_prompts
+        && !store_resolved_prompts(state, task_id, &final_system_prompt, &final_user_prompt).await
+    {
         return None;
     }
 
@@ -711,6 +715,58 @@ provider payload with adopted candidates and source-pack details
         assert!(stored_user_prompt.contains(RESOLVED_PROMPT_STORAGE_REDACTED_SOURCE_PACK));
         assert!(!stored_user_prompt.contains("raw source document body"));
         assert!(!stored_user_prompt.contains("provider payload with adopted candidates"));
+    }
+
+    #[tokio::test]
+    async fn execute_task_logic_can_skip_resolved_prompt_persistence_for_internal_calls() {
+        let dir = temp_test_dir("ai-runtime-skip-prompt-persistence");
+        let db = setup_db(&dir).await.unwrap();
+        let state = test_state(db.clone(), dir.join("uploads"));
+        sqlx::query("INSERT INTO tasks (original_name, status, resolved_system_prompt, resolved_user_prompt) VALUES (?, ?, ?, ?)")
+            .bind("internal-enrichment.md")
+            .bind("running")
+            .bind("original system prompt")
+            .bind("original user prompt")
+            .execute(&db)
+            .await
+            .unwrap();
+        let task_id = sqlx::query_scalar::<_, i64>("SELECT id FROM tasks LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+        let result = execute_task_logic(
+            &state,
+            task_id,
+            Vec::new(),
+            "unknown-model",
+            "unknown-source",
+            "internal system prompt",
+            "internal event-card enrichment prompt with Claim Log rows",
+            Some("internal subject"),
+            "[AI-Research]",
+            Some("false"),
+            Some("none"),
+            Some("medium"),
+            false,
+            None,
+            false,
+        )
+        .await;
+
+        assert!(result.is_none());
+        let stored_row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT resolved_system_prompt, resolved_user_prompt FROM tasks WHERE id = ?",
+        )
+        .bind(task_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(stored_row.0.as_deref(), Some("original system prompt"));
+        assert_eq!(stored_row.1.as_deref(), Some("original user prompt"));
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     async fn insert_running_task(db: &sqlx::SqlitePool, original_name: &str) -> i64 {

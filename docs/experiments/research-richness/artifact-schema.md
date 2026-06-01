@@ -42,7 +42,7 @@ Finalization notes:
 - trusted save uses finalized visible output, not the raw model draft
 - the finalizer rebuilds `Final Answer`, `Source Audit`, `Claim Log`, `Limits/Conflicts/Research Debt`, and `Quality Gate` from persisted artifacts plus source diagnostics
 - hidden machine-readable JSON remains appended after the visible appendix and does not count as visible compliance by itself
-- narrative enrichment reads persisted artifacts and writes back only sanitized enriched artifacts, warnings, and specific research debt; raw enrichment prompts, raw model output, provider payloads, source diagnostics, and controller artifact dumps remain local-only
+- narrative enrichment reads persisted artifacts and writes back only sanitized enriched artifacts, warnings, and specific research debt; raw enrichment prompts are transient and raw model output, provider payloads, source diagnostics, and controller artifact dumps remain local-only
 
 Backward compatibility:
 
@@ -79,7 +79,7 @@ Field roles:
 
 - `timeline`: chronology scaffolding with stable event IDs and optional expected claim/source references
 - `event_cards`: phased historical/process scaffold rows with `label`, `timeframe`, `actors`, `region_or_front`, `trigger`, `development`, `outcome`, optional `claim_log_ids`, optional `source_ids`, optional per-card `causal_spine`, optional per-card `interpretive_layers`, `confidence`, and `open_questions`
-  - In strict/high historical runs, weak cards may be passed through the bounded historical event-card enrichment strategy. The strategy may fill missing phase fields and nested causal/interpretive detail, but only when the proposed fields cite existing supported Claim Log IDs and existing Source Card IDs. Invented IDs or ungrounded details are dropped and recorded as specific research debt.
+  - In strict/high historical runs, weak cards may be passed through the bounded historical event-card enrichment strategy. The strategy may fill missing phase fields and nested causal/interpretive detail, but only when the proposed fields cite existing supported Claim Log IDs and existing public Source Card IDs. Invented IDs, private/local source refs, or ungrounded details are dropped and recorded as specific research debt.
 - `actors`: institutions, people, or groups the explanation should keep visible
 - `causal_chain`: outline-only cause/effect sequence for the reader path
 - `evidence_layers`: plan for presenting support from source-backed facts to interpretation and limits; not support itself

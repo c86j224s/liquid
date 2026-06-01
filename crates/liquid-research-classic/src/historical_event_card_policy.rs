@@ -119,8 +119,11 @@ pub fn build_historical_event_card_enrichment_prompt(
         .and_then(|state| state.event_cards.get(selection.index))
         .and_then(|card| serde_json::to_string_pretty(card).ok())
         .unwrap_or_else(|| "{}".to_string());
-    let claims = compact_claim_rows(&artifacts.claim_log);
-    let sources = compact_source_rows(&artifacts.source_cards);
+    let evidence = EvidenceIndex::new(artifacts);
+    let trusted_claims = prompt_claim_rows(&artifacts.claim_log, &evidence);
+    let trusted_sources = prompt_source_rows(&artifacts.source_cards, &evidence);
+    let claims = compact_claim_rows(&trusted_claims);
+    let sources = compact_source_rows(&trusted_sources);
     let reasons = selection.reasons.join("; ");
     format!(
         "You are enriching one weak historical event card inside a larger research artifact.\n\
@@ -953,6 +956,7 @@ impl EvidenceIndex {
     fn from_parts(claims: &[ResearchClaimLogEntry], sources: &[ResearchSourceCard]) -> Self {
         let source_ids = sources
             .iter()
+            .filter(|source| normalize_absolute_public_evidence_url(&source.url).is_some())
             .map(|source| source.id.clone())
             .collect::<HashSet<_>>();
         let claim_ids = claims
@@ -987,6 +991,38 @@ impl EvidenceIndex {
             claim_texts,
         }
     }
+}
+
+fn prompt_source_rows(
+    sources: &[ResearchSourceCard],
+    evidence: &EvidenceIndex,
+) -> Vec<ResearchSourceCard> {
+    sources
+        .iter()
+        .filter(|source| evidence.source_ids.contains(&source.id))
+        .cloned()
+        .collect()
+}
+
+fn prompt_claim_rows(
+    claims: &[ResearchClaimLogEntry],
+    evidence: &EvidenceIndex,
+) -> Vec<ResearchClaimLogEntry> {
+    claims
+        .iter()
+        .filter(|claim| evidence.supported_claim_ids.contains(&claim.id))
+        .map(|claim| {
+            let mut trusted = claim.clone();
+            trusted
+                .support_source_card_ids
+                .retain(|id| evidence.source_ids.contains(id));
+            trusted.support_urls.retain(|url| {
+                normalize_absolute_public_evidence_url(url)
+                    .is_some_and(|normalized| !normalized.is_empty())
+            });
+            trusted
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1127,6 +1163,67 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("supported Claim Log rows")));
+    }
+
+    #[test]
+    fn private_source_card_urls_do_not_count_as_supported_claim_grounding_or_prompt_rows() {
+        let mut private_source = source("S1");
+        private_source.url = "http://localhost:11434/internal".to_string();
+        private_source.title = "Private Source".to_string();
+        let mut card = rich_card();
+        card.claim_log_ids = vec!["C1".to_string()];
+        card.source_ids = vec!["S1".to_string()];
+
+        let artifacts = ResearchControllerArtifacts {
+            source_cards: vec![private_source],
+            claim_log: vec![claim("C1", "S1")],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![card],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+
+        let selected = select_weak_historical_event_cards(&artifacts, 2);
+        assert_eq!(selected.len(), 1);
+        assert!(selected[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("supported Claim Log rows")));
+
+        let prompt = build_historical_event_card_enrichment_prompt(
+            &artifacts,
+            &selected[0],
+            "러일전쟁의 전개",
+        );
+        assert!(!prompt.contains("localhost"));
+        assert!(!prompt.contains("Private Source"));
+        assert!(!prompt.contains("- C1 |"));
+        assert!(!prompt.contains("- S1 |"));
+    }
+
+    #[test]
+    fn private_source_card_ids_are_rejected_as_enrichment_support() {
+        let mut artifacts = artifacts_with_card(weak_card());
+        artifacts.source_cards[0].url = "http://localhost:11434/internal".to_string();
+        let report = merge_historical_event_card_enrichment_json(
+            &mut artifacts,
+            0,
+            r#"{"development":"러시아 함대 압박과 한국 병참로 확보가 결합되어 만주 진입 조건을 만들었다.","claim_log_ids":["C1"],"source_ids":["S1"]}"#,
+        );
+        assert!(!report.accepted());
+        assert!(report
+            .debts
+            .iter()
+            .any(|debt| debt.missing_evidence.contains("C1")));
+        assert!(report
+            .debts
+            .iter()
+            .any(|debt| debt.missing_evidence.contains("S1")));
+        let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
+        assert!(!card.claim_log_ids.contains(&"C1".to_string()));
+        assert!(!card.source_ids.contains(&"S1".to_string()));
     }
 
     #[test]

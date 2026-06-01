@@ -101,6 +101,7 @@ pub(super) async fn run_narrative_enrichment_stage(
                 research_intensity: task.research_intensity.as_deref(),
                 fallback_used: task.fallback_used.as_deref() == Some("true"),
                 fallback_reason: task.fallback_reason.as_deref(),
+                persist_resolved_prompts: false,
             })
             .await
         else {

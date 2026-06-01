@@ -207,6 +207,7 @@ pub(super) async fn execute_scrape_task(state: &AppState, task: TaskInfo) {
             research_intensity: None,
             fallback_used: false,
             fallback_reason: None,
+            persist_resolved_prompts: true,
         })
         .await;
     handle_task_completion(

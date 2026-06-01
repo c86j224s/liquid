@@ -67,6 +67,7 @@ impl ModelRuntime for AppModelRuntime<'_> {
                 request.research_intensity,
                 request.fallback_used,
                 request.fallback_reason,
+                request.persist_resolved_prompts,
             )
             .await
         })
