@@ -263,6 +263,19 @@ pub(super) async fn execute_ai_task_with_quality_loop(
             Some(research_source_subject_for_task(&task, user_prompt)),
         )
         .await;
+        let _enrichment_report = run_narrative_enrichment_stage(
+            state,
+            &task,
+            &runtime,
+            model_name,
+            source,
+            file_prefix,
+            user_prompt,
+            iteration,
+            max_iterations,
+            &mut controller_events,
+        )
+        .await;
         let finalized_output = finalize_task_research_output(
             state,
             task.id,

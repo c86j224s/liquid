@@ -43,6 +43,7 @@ mod completion_shell;
 mod execution_shell;
 mod helpers;
 mod lifecycle_policy;
+mod narrative_enrichment;
 mod narrative_merge;
 mod queue_workflow;
 mod repair_helpers;
@@ -74,6 +75,8 @@ pub(crate) use self::lifecycle_policy::{
     TASK_CANCELLED_MESSAGE,
 };
 #[allow(unused_imports)]
+use self::narrative_enrichment::*;
+#[allow(unused_imports)]
 use self::narrative_merge::*;
 #[allow(unused_imports)]
 use self::queue_workflow::*;
@@ -94,6 +97,7 @@ const RESEARCH_STAGE_SOURCE_CARDS: &str = "source_cards";
 const RESEARCH_STAGE_CLAIM_LOG: &str = "claim_log";
 const RESEARCH_STAGE_DRAFT: &str = "draft";
 const RESEARCH_STAGE_QUALITY_GATE: &str = "quality_gate";
+const RESEARCH_STAGE_NARRATIVE_ENRICHMENT: &str = "narrative_enrichment";
 const RESEARCH_STAGE_REPAIR_PLANNING: &str = "repair_planning";
 const RESEARCH_STAGE_EVIDENCE_REPAIR: &str = "evidence_repair";
 const RESEARCH_STAGE_FINAL: &str = "final";
