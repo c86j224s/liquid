@@ -232,13 +232,20 @@ pub fn merge_historical_event_card_enrichment_json(
         if !valid_source_ids.is_empty() {
             report.accepted_fields.push("source_ids".to_string());
         }
-        accept_string_field(card, &value, "label", &mut report, false);
-        accept_string_field(card, &value, "timeframe", &mut report, false);
-        accept_string_array_field(card, &value, "actors", &mut report);
-        accept_string_field(card, &value, "region_or_front", &mut report, false);
-        accept_string_field(card, &value, "trigger", &mut report, true);
-        accept_string_field(card, &value, "development", &mut report, true);
-        accept_string_field(card, &value, "outcome", &mut report, true);
+        accept_string_field(card, &value, "label", &mut report, card_index, false);
+        accept_string_field(card, &value, "timeframe", &mut report, card_index, false);
+        accept_string_array_field(card, &value, "actors", &mut report, card_index);
+        accept_string_field(
+            card,
+            &value,
+            "region_or_front",
+            &mut report,
+            card_index,
+            false,
+        );
+        accept_string_field(card, &value, "trigger", &mut report, card_index, true);
+        accept_string_field(card, &value, "development", &mut report, card_index, true);
+        accept_string_field(card, &value, "outcome", &mut report, card_index, true);
     } else if value.get("claim_log_ids").is_some()
         || [
             "label",
@@ -264,7 +271,7 @@ pub fn merge_historical_event_card_enrichment_json(
 
     merge_causal_spine(card, &value, &evidence, &mut report, card_index);
     merge_interpretive_layers(card, &value, &evidence, &mut report, card_index);
-    merge_open_questions(card, &value, &mut report);
+    merge_open_questions(card, &value, &mut report, card_index);
     merge_model_research_debt(&value, &mut report, card_index, card.label.as_str());
 
     report
@@ -522,12 +529,17 @@ fn accept_string_field(
     value: &Value,
     field: &str,
     report: &mut HistoricalEventCardMergeReport,
+    card_index: usize,
     prefer_richer: bool,
 ) {
     let Some(incoming) = value.get(field).and_then(Value::as_str) else {
         return;
     };
     let incoming = sanitize_text(incoming, MAX_TEXT_CHARS);
+    if !safe_enrichment_text(&incoming) {
+        reject_unsafe_enrichment_text(report, card_index, field);
+        return;
+    }
     if !useful_text(&incoming, PHASE_FIELD_THIN_CHAR_THRESHOLD) {
         report.rejected_fields.push(field.to_string());
         return;
@@ -562,14 +574,20 @@ fn accept_string_array_field(
     value: &Value,
     field: &str,
     report: &mut HistoricalEventCardMergeReport,
+    card_index: usize,
 ) {
     if field != "actors" {
         return;
     }
-    let actors = string_array(value.get(field), MAX_ARRAY_ITEMS)
-        .into_iter()
-        .filter(|actor| useful_text(actor, 2))
-        .collect::<Vec<_>>();
+    let actors = filter_safe_enrichment_strings(
+        string_array(value.get(field), MAX_ARRAY_ITEMS),
+        report,
+        card_index,
+        field,
+    )
+    .into_iter()
+    .filter(|actor| useful_text(actor, 2))
+    .collect::<Vec<_>>();
     if actors.is_empty() {
         return;
     }
@@ -618,6 +636,26 @@ fn merge_causal_spine(
             report.rejected_fields.push(context);
             continue;
         }
+        let step_type = string_field(item, "step_type", MAX_SHORT_TEXT_CHARS);
+        let epistemic_status =
+            optional_string_field(item, "epistemic_status", MAX_SHORT_TEXT_CHARS);
+        if !safe_enrichment_text(&description)
+            || !safe_enrichment_text(&reasoning)
+            || !safe_enrichment_text(&step_type)
+            || epistemic_status
+                .as_deref()
+                .is_some_and(|status| !safe_enrichment_text(status))
+        {
+            report.rejected_fields.push(context.clone());
+            reject_unsafe_enrichment_text(report, card_index, &context);
+            continue;
+        }
+        let limits = filter_safe_enrichment_strings(
+            string_array(item.get("limits"), MAX_ARRAY_ITEMS),
+            report,
+            card_index,
+            &format!("{context}.limits"),
+        );
         let mut source_ids = valid_source_ids_from_value(
             item,
             "source_ids",
@@ -632,11 +670,11 @@ fn merge_causal_spine(
             }
         }
         accepted.push(NarrativeCausalSpineStep {
-            step_type: string_field(item, "step_type", MAX_SHORT_TEXT_CHARS),
+            step_type,
             description,
-            epistemic_status: optional_string_field(item, "epistemic_status", MAX_SHORT_TEXT_CHARS),
+            epistemic_status,
             reasoning: Some(reasoning),
-            limits: string_array(item.get("limits"), MAX_ARRAY_ITEMS),
+            limits,
             claim_log_ids,
             source_ids: filter_known_ids(source_ids, &evidence.source_ids),
         });
@@ -685,6 +723,26 @@ fn merge_interpretive_layers(
             report.rejected_fields.push(context);
             continue;
         }
+        let layer_type = string_field(item, "layer_type", MAX_SHORT_TEXT_CHARS);
+        let epistemic_status =
+            optional_string_field(item, "epistemic_status", MAX_SHORT_TEXT_CHARS);
+        if !safe_enrichment_text(&interpretation)
+            || !safe_enrichment_text(&reasoning)
+            || !safe_enrichment_text(&layer_type)
+            || epistemic_status
+                .as_deref()
+                .is_some_and(|status| !safe_enrichment_text(status))
+        {
+            report.rejected_fields.push(context.clone());
+            reject_unsafe_enrichment_text(report, card_index, &context);
+            continue;
+        }
+        let limits = filter_safe_enrichment_strings(
+            string_array(item.get("limits"), MAX_ARRAY_ITEMS),
+            report,
+            card_index,
+            &format!("{context}.limits"),
+        );
         let mut source_ids = valid_source_ids_from_value(
             item,
             "source_ids",
@@ -699,11 +757,11 @@ fn merge_interpretive_layers(
             }
         }
         accepted.push(NarrativeInterpretiveLayer {
-            layer_type: string_field(item, "layer_type", MAX_SHORT_TEXT_CHARS),
+            layer_type,
             interpretation,
-            epistemic_status: optional_string_field(item, "epistemic_status", MAX_SHORT_TEXT_CHARS),
+            epistemic_status,
             reasoning: Some(reasoning),
-            limits: string_array(item.get("limits"), MAX_ARRAY_ITEMS),
+            limits,
             claim_log_ids,
             source_ids: filter_known_ids(source_ids, &evidence.source_ids),
         });
@@ -720,11 +778,17 @@ fn merge_open_questions(
     card: &mut NarrativeEventCard,
     value: &Value,
     report: &mut HistoricalEventCardMergeReport,
+    card_index: usize,
 ) {
-    let questions = string_array(value.get("open_questions"), MAX_ARRAY_ITEMS)
-        .into_iter()
-        .filter(|question| useful_text(question, 12))
-        .collect::<Vec<_>>();
+    let questions = filter_safe_enrichment_strings(
+        string_array(value.get("open_questions"), MAX_ARRAY_ITEMS),
+        report,
+        card_index,
+        "open_questions",
+    )
+    .into_iter()
+    .filter(|question| useful_text(question, 12))
+    .collect::<Vec<_>>();
     if questions.is_empty() {
         return;
     }
@@ -746,6 +810,12 @@ fn merge_model_research_debt(
     };
     for (idx, item) in items.iter().take(MAX_RESEARCH_DEBT_ITEMS).enumerate() {
         let mut missing = string_field(item, "missing_evidence", MAX_TEXT_CHARS);
+        if !safe_enrichment_text(&missing) {
+            report
+                .rejected_fields
+                .push(format!("research_debt[{idx}].missing_evidence"));
+            missing = String::new();
+        }
         if !useful_text(&missing, 12) {
             missing = format!(
                 "event-card enrichment still lacks specific evidence for phase '{}': debt item {}",
@@ -753,12 +823,24 @@ fn merge_model_research_debt(
                 idx + 1
             );
         }
+        let candidate_queries = filter_safe_enrichment_strings(
+            string_array(item.get("candidate_queries"), MAX_ARRAY_ITEMS),
+            report,
+            card_index,
+            &format!("research_debt[{idx}].candidate_queries"),
+        );
+        let next_check_actions = filter_safe_enrichment_strings(
+            string_array(item.get("next_check_actions"), MAX_ARRAY_ITEMS),
+            report,
+            card_index,
+            &format!("research_debt[{idx}].next_check_actions"),
+        );
         report.debts.push(enrichment_debt(
             card_index,
             &format!("model-debt-{idx}"),
             &missing,
-            string_array(item.get("candidate_queries"), MAX_ARRAY_ITEMS),
-            string_array(item.get("next_check_actions"), MAX_ARRAY_ITEMS),
+            candidate_queries,
+            next_check_actions,
         ));
     }
 }
@@ -796,6 +878,117 @@ fn string_array(value: Option<&Value>, limit: usize) -> Vec<String> {
         .filter(|item| seen.insert(item.clone()))
         .take(limit)
         .collect()
+}
+
+fn filter_safe_enrichment_strings(
+    items: Vec<String>,
+    report: &mut HistoricalEventCardMergeReport,
+    card_index: usize,
+    context: &str,
+) -> Vec<String> {
+    let mut rejected = false;
+    let safe = items
+        .into_iter()
+        .filter(|item| {
+            let is_safe = safe_enrichment_text(item);
+            if !is_safe {
+                rejected = true;
+            }
+            is_safe
+        })
+        .collect();
+    if rejected {
+        reject_unsafe_enrichment_text(report, card_index, context);
+    }
+    safe
+}
+
+fn safe_enrichment_text(value: &str) -> bool {
+    unsafe_enrichment_text_reason(value).is_none()
+}
+
+fn unsafe_enrichment_text_reason(value: &str) -> Option<&'static str> {
+    let lower = value.to_ascii_lowercase();
+    let unsafe_markers = [
+        "http://",
+        "https://",
+        "://",
+        "www.",
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "169.254.169.254",
+        "metadata.google.internal",
+        "instance-data.ec2.internal",
+        "computemetadata",
+        "/latest/meta-data",
+        "resolved prompt",
+        "resolved_system_prompt",
+        "resolved_user_prompt",
+        "system prompt",
+        "user prompt",
+        "source pack",
+        "provider payload",
+        "controller artifact",
+        "research_controller",
+        "source diagnostics",
+        "raw diagnostics",
+        "raw prompt",
+        "quality gate",
+        "validator",
+        "diagnostic",
+        "payload",
+        "research_artifact_json",
+        "[research_artifact_json]",
+        "<system-reminder",
+        "BEGIN PRIVATE",
+    ];
+    unsafe_markers
+        .iter()
+        .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
+        .then_some("unsafe prompt/provider/URL marker")
+}
+
+fn reject_unsafe_enrichment_text(
+    report: &mut HistoricalEventCardMergeReport,
+    card_index: usize,
+    context: &str,
+) {
+    report.rejected_fields.push(context.to_string());
+    report.debts.push(enrichment_debt(
+        card_index,
+        &format!("unsafe-text-{}", safe_debt_suffix(context)),
+        &format!(
+            "event-card enrichment field '{context}' contained URL-like, private-host, prompt, provider, or diagnostic text and was rejected"
+        ),
+        Vec::new(),
+        vec![
+            "Return only phase prose grounded in existing Claim Log IDs; keep raw URLs, prompt text, provider payloads, and diagnostics out of event-card enrichment."
+                .to_string(),
+        ],
+    ));
+}
+
+fn safe_debt_suffix(value: &str) -> String {
+    let mut suffix = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(48)
+        .collect::<String>();
+    if suffix.is_empty() {
+        suffix = "field".to_string();
+    }
+    suffix
 }
 
 fn filter_known_ids(ids: Vec<String>, known: &HashSet<String>) -> Vec<String> {
@@ -999,7 +1192,10 @@ fn prompt_source_rows(
 ) -> Vec<ResearchSourceCard> {
     sources
         .iter()
-        .filter(|source| evidence.source_ids.contains(&source.id))
+        .filter(|source| {
+            evidence.source_ids.contains(&source.id)
+                && normalize_absolute_public_evidence_url(&source.url).is_some()
+        })
         .cloned()
         .collect()
 }
@@ -1204,6 +1400,39 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_source_card_ids_do_not_reintroduce_private_prompt_rows() {
+        let public_source = source("S1");
+        let mut private_duplicate = source("S1");
+        private_duplicate.url = "http://localhost:11434/internal".to_string();
+        private_duplicate.title = "Private Duplicate Source".to_string();
+        let mut card = weak_card();
+        card.claim_log_ids = vec!["C1".to_string()];
+        card.source_ids = vec!["S1".to_string()];
+
+        let artifacts = ResearchControllerArtifacts {
+            source_cards: vec![public_source, private_duplicate],
+            claim_log: vec![claim("C1", "S1")],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![card],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+
+        let selected = select_weak_historical_event_cards(&artifacts, 1);
+        assert_eq!(selected.len(), 1);
+        let prompt = build_historical_event_card_enrichment_prompt(
+            &artifacts,
+            &selected[0],
+            "러일전쟁의 전개",
+        );
+        assert!(prompt.contains("https://example.org/S1"));
+        assert!(!prompt.contains("localhost"));
+        assert!(!prompt.contains("Private Duplicate Source"));
+    }
+
+    #[test]
     fn private_source_card_ids_are_rejected_as_enrichment_support() {
         let mut artifacts = artifacts_with_card(weak_card());
         artifacts.source_cards[0].url = "http://localhost:11434/internal".to_string();
@@ -1224,6 +1453,30 @@ mod tests {
         let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
         assert!(!card.claim_log_ids.contains(&"C1".to_string()));
         assert!(!card.source_ids.contains(&"S1".to_string()));
+    }
+
+    #[test]
+    fn unsafe_enrichment_text_is_rejected_even_with_valid_claim_support() {
+        let mut artifacts = artifacts_with_card(weak_card());
+        let report = merge_historical_event_card_enrichment_json(
+            &mut artifacts,
+            0,
+            r#"{
+              "development":"러시아 함대 압박과 한국 병참로 확보가 결합되었다. http://169.254.169.254/latest/meta-data 이 문장은 충분히 길어 기존 설명을 대체하려 한다.",
+              "claim_log_ids":["C1"],
+              "source_ids":["S1"],
+              "causal_spine":[{"step_type":"forcing_factor","description":"resolved prompt 내용을 반복한다.","epistemic_status":"interpretation","reasoning":"Claim Log가 이 국면을 뒷받침한다.","limits":[],"claim_log_ids":["C1"],"source_ids":["S1"]}],
+              "open_questions":["provider payload를 확인하라"]
+            }"#,
+        );
+        let card = &artifacts.narrative_state.as_ref().unwrap().event_cards[0];
+        assert_eq!(card.development.as_deref(), Some("짧다"));
+        assert!(card.causal_spine.is_empty());
+        assert!(card.open_questions.is_empty());
+        assert!(report
+            .debts
+            .iter()
+            .any(|debt| debt.id.contains("unsafe-text")));
     }
 
     #[test]
