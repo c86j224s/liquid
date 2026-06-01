@@ -2,6 +2,7 @@ use liquid_protocol::{
     NarrativeCausalSpineStep, NarrativeEventCard, NarrativeInterpretiveLayer,
     ResearchClaimLogEntry, ResearchControllerArtifacts, ResearchDebtItem, ResearchSourceCard,
 };
+use liquid_research_core::normalize_absolute_public_evidence_url;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -968,10 +969,10 @@ impl EvidenceIndex {
                 .filter(|id| source_ids.contains(*id))
                 .cloned()
                 .collect::<Vec<_>>();
-            let has_public_url = claim.support_urls.iter().any(|url| {
-                let lower = url.trim().to_ascii_lowercase();
-                lower.starts_with("http://") || lower.starts_with("https://")
-            });
+            let has_public_url = claim
+                .support_urls
+                .iter()
+                .any(|url| normalize_absolute_public_evidence_url(url).is_some());
             if !known_support_sources.is_empty() || has_public_url {
                 supported_claim_ids.insert(claim.id.clone());
             }
@@ -1092,6 +1093,40 @@ mod tests {
         let artifacts = artifacts_with_card(rich_card());
         let selected = select_weak_historical_event_cards(&artifacts, 2);
         assert!(selected.is_empty(), "unexpected reasons: {selected:?}");
+    }
+
+    #[test]
+    fn metadata_support_urls_do_not_count_as_supported_claim_grounding() {
+        let mut card = rich_card();
+        card.claim_log_ids = vec!["C1".to_string()];
+        card.source_ids = vec!["S1".to_string()];
+
+        let artifacts = ResearchControllerArtifacts {
+            source_cards: vec![source("S1")],
+            claim_log: vec![ResearchClaimLogEntry {
+                id: "C1".to_string(),
+                claim: "1904년 뤼순과 인천의 연결이 다음 국면을 압박했다.".to_string(),
+                support_source_card_ids: Vec::new(),
+                support_urls: vec![
+                    "https://metadata.google.internal/computeMetadata/v1".to_string()
+                ],
+                confidence: Some("medium".to_string()),
+                ..ResearchClaimLogEntry::default()
+            }],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![card],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+
+        let selected = select_weak_historical_event_cards(&artifacts, 2);
+        assert_eq!(selected.len(), 1);
+        assert!(selected[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("supported Claim Log rows")));
     }
 
     #[test]
