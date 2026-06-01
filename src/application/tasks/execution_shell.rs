@@ -265,6 +265,16 @@ pub(super) async fn execute_ai_task_with_quality_loop(
             Some(research_source_subject_for_task(&task, user_prompt)),
         )
         .await;
+        let _phase_state_report = run_phase_state_stage(
+            state,
+            &task,
+            file_prefix,
+            user_prompt,
+            iteration,
+            max_iterations,
+            &mut controller_events,
+        )
+        .await;
         let _enrichment_report = run_narrative_enrichment_stage(
             state,
             &task,
@@ -647,7 +657,7 @@ pub(super) async fn persist_iteration_research_artifacts(
     artifacts.version = RESEARCH_CONTROLLER_ARTIFACT_VERSION;
     artifacts.events = events.to_vec();
     let diagnostics = load_research_source_diagnostics(state, task_id).await;
-    match parse_research_artifact_block(normalized_output, file_type) {
+    match parse_research_artifact_block_with_budget_repair(normalized_output, file_type) {
         Ok(mut parsed) => {
             let mut scaffold_authorized = has_local_pi_source_pack_source_card_scaffold(&artifacts);
             if let Some(source_cards) = local_pi_source_pack_scaffold_cards_for_iteration(

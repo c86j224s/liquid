@@ -1,8 +1,8 @@
 use super::*;
 use liquid_research_classic::{
-    build_historical_event_card_enrichment_prompt, historical_event_card_enrichment_applies,
-    merge_historical_event_card_enrichment_json, push_unique_warning,
-    select_weak_historical_event_cards, upsert_research_debt,
+    build_historical_event_card_enrichment_prompt, historical_enrichment_readiness_debt,
+    historical_event_card_enrichment_applies, merge_historical_event_card_enrichment_json,
+    push_unique_warning, select_evidence_ready_weak_historical_event_cards, upsert_research_debt,
 };
 
 const MAX_HISTORICAL_EVENT_CARDS_PER_ITERATION: usize = 2;
@@ -46,19 +46,62 @@ pub(super) async fn run_narrative_enrichment_stage(
         Some(evidence_subject),
         &artifacts,
     ) {
+        let reason = if artifacts.source_cards.is_empty() {
+            "no_source_cards"
+        } else if artifacts.claim_log.is_empty() {
+            "no_claim_log"
+        } else if artifacts
+            .narrative_state
+            .as_ref()
+            .is_none_or(|state| state.event_cards.is_empty())
+        {
+            "no_narrative_state_event_cards"
+        } else {
+            "strategy_not_applicable"
+        };
+        if matches!(
+            reason,
+            "no_source_cards" | "no_claim_log" | "no_narrative_state_event_cards"
+        ) {
+            push_unique_warning(
+                &mut artifacts.warnings,
+                format!("narrative_enrichment_skipped:{reason}"),
+            );
+            upsert_research_debt(
+                &mut artifacts.research_debt,
+                historical_enrichment_readiness_debt(
+                    reason,
+                    &format!(
+                        "narrative enrichment skipped because {reason} prevents grounded event-card enrichment"
+                    ),
+                ),
+            );
+            artifacts.version = RESEARCH_CONTROLLER_ARTIFACT_VERSION;
+            artifacts.events = controller_events.clone();
+            persist_research_controller_artifacts(state, task.id, &artifacts).await;
+        }
         return NarrativeEnrichmentStageReport {
-            skipped_reason: Some("no enabled narrative enrichment strategy applies".to_string()),
+            skipped_reason: Some(format!("narrative_enrichment_skipped:{reason}")),
             ..NarrativeEnrichmentStageReport::default()
         };
     }
 
-    let selections =
-        select_weak_historical_event_cards(&artifacts, MAX_HISTORICAL_EVENT_CARDS_PER_ITERATION);
+    let selections = select_evidence_ready_weak_historical_event_cards(
+        &artifacts,
+        MAX_HISTORICAL_EVENT_CARDS_PER_ITERATION,
+    );
     if selections.is_empty() {
+        push_unique_warning(
+            &mut artifacts.warnings,
+            "narrative_enrichment_skipped:no_evidence_ready_weak_cards".to_string(),
+        );
+        artifacts.version = RESEARCH_CONTROLLER_ARTIFACT_VERSION;
+        artifacts.events = controller_events.clone();
+        persist_research_controller_artifacts(state, task.id, &artifacts).await;
         return NarrativeEnrichmentStageReport {
             strategy: Some("historical_event_card"),
             skipped_reason: Some(
-                "historical event cards are already sufficiently grounded".to_string(),
+                "narrative_enrichment_skipped:no_evidence_ready_weak_cards".to_string(),
             ),
             ..NarrativeEnrichmentStageReport::default()
         };

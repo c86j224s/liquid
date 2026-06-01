@@ -20,7 +20,7 @@ Envelope:
 
 Fields:
 
-- `events`: controller stage history preserved across retries; `narrative_enrichment` is the bounded post-persistence/pre-finalization stage for additive narrative/artifact enrichment strategies
+- `events`: controller stage history preserved across retries; `phase_state` is the strict/high historical engine-owned phase construction step, and `narrative_enrichment` is the bounded post-persistence/pre-finalization stage for additive narrative/artifact enrichment strategies
 - `source_cards`: `id`, `url`, `title`, `source_class`, `accessed_at`, `extracted_facts`, `limitation`, `diagnostics_ref`, `confidence`
 - `claim_log`: `id`, `claim`, `claim_type`, `support_source_card_ids`, `support_urls`, `confidence`, `uncertainty_note`, `needs_verification`
 - `conflict_map`: `id`, `topic`, `conflicting_claim_ids`, `source_card_ids`, `resolution_status`, `resolution_note`, `promoted_to_debt`
@@ -28,11 +28,12 @@ Fields:
 - `narrative_state`: optional outline continuity artifact only; never evidence
 - `reader_quality`: optional reader-planning artifact only; never evidence
 - `quality_gate`: `status`, `failure_messages`, `unsupported_claim_count`, `unresolved_conflict_count`, `open_debt_count`
-- `warnings`: parser, compatibility, or finalization warnings persisted after deterministic repair
+- `warnings`: parser, compatibility, phase-state, or finalization warnings persisted after deterministic repair
 
 Canonical placement:
 
 - `narrative_state.event_cards` is the canonical location for historical/process phase dossiers. Event-card enrichment is a controller sub-pipeline, not only prompt wording: it runs after artifact parsing/persistence and before finalization when a strict/high historical strategy applies.
+- strict/high historical runs may first derive engine-owned phase state from existing event cards, section outline, timeline, open gaps, and topic-class phase patterns, then repair only grounded event-card identity before enrichment or finalization. Model-emitted event cards are candidate input, not authoritative engine state.
 - Root-level `event_cards`, if a model emits it, is compatibility noise and should not be treated as the trusted scaffold or as evidence.
 - Hidden scaffold depth and visible report richness are independent checks: a visible report can read well while failing because the hidden scaffold lacks grounded causal/interpretive structure, and a hidden scaffold cannot compensate for a flat reader-facing final answer.
 - Reader Quality metrics are currently observable diagnostics, not weighted score inputs; they explain narrative planning coverage without replacing evidence gates or the genre/section richness dimension.
@@ -42,6 +43,7 @@ Finalization notes:
 - trusted save uses finalized visible output, not the raw model draft
 - the finalizer rebuilds `Final Answer`, `Source Audit`, `Claim Log`, `Limits/Conflicts/Research Debt`, and `Quality Gate` from persisted artifacts plus source diagnostics
 - hidden machine-readable JSON remains appended after the visible appendix and does not count as visible compliance by itself
+- artifact stabilization may parse oversized but syntactically valid machine artifact JSON into compact persisted controller artifacts and record warnings/debt; it must not persist the raw oversized JSON
 - narrative enrichment reads persisted artifacts and writes back only sanitized enriched artifacts, warnings, and specific research debt; raw enrichment prompts are transient and raw model output, provider payloads, source diagnostics, and controller artifact dumps remain local-only
 
 Backward compatibility:
@@ -104,6 +106,8 @@ Evidence boundary:
 - for Hannibal / Second Punic War-class strict/high runs, grounded `event_cards` may also be used during finalization to restore visible campaign phase subsections, date anchors, and actor/front continuity when the draft collapses into a flat summary; this repair is structural only and does not weaken Source Card / Claim Log evidence gates
 - `evidence_layers`, `interpretive_tensions`, `impacts`, `reader_questions`, and `open_gaps` may guide prompts and finalization order only when Source Cards and Claim Log support the resulting prose
 - strict/high gates and finalizer-visible event-card prose require direct supported `claim_log_ids`; `source_ids` stay supplemental context and Source Card ID overlap alone is not enough
+- engine-owned phase-state repair rejects placeholder labels and may fill only grounded structural identity (`label`, `timeframe`, `actors`, `region_or_front`, `trigger`, `claim_log_ids`, `source_ids`); unsupported development/outcome prose stays empty or becomes debt until later grounded enrichment
+- broad whole-topic Claim Log rows may inform context but do not make a concrete phase ready unless they also name phase-specific anchors such as timeframe/event, place/front, actors, trigger/development, or outcome/handoff
 - `causal_spine` items use language-neutral `step_type` values such as `precondition`, `forcing_factor`, `decision_point`, `execution`, `contingent_moment`, `outcome`, and `forward_pressure`; each item carries its own `description`, `epistemic_status`, `reasoning`, `limits`, `claim_log_ids`, and `source_ids`
 - `interpretive_layers` items use `layer_type` values such as `diplomacy`, `operations`, `logistics_economics`, `geography_front`, `domestic_politics`, and `historiography_limits`; each item carries its own `interpretation`, `epistemic_status`, `reasoning`, `limits`, `claim_log_ids`, and `source_ids`
 - `epistemic_status` distinguishes `fact`, `interpretation`, `inference`, `hypothesis`, `contested`, and `limit`. Claim refs are evidence anchors, not truth guarantees: interpretations must say how the cited facts are being read, and inference may go one step beyond only when the reasoning chain is explicit and non-contradictory. Hypotheses/limits may appear as caveats but should not carry the main conclusion.

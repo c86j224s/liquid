@@ -62,11 +62,7 @@ pub fn historical_event_card_enrichment_applies(
     if research_intensity != Some("high") || quality_depth != Some("strict") {
         return false;
     }
-    if artifacts
-        .narrative_state
-        .as_ref()
-        .is_none_or(|state| state.event_cards.is_empty())
-    {
+    if artifacts.source_cards.is_empty() || artifacts.claim_log.is_empty() {
         return false;
     }
     let subject = [
@@ -107,6 +103,69 @@ pub fn select_weak_historical_event_cards(
         })
         .take(max_cards)
         .collect()
+}
+
+pub fn select_evidence_ready_weak_historical_event_cards(
+    artifacts: &ResearchControllerArtifacts,
+    max_cards: usize,
+) -> Vec<HistoricalEventCardSelection> {
+    if max_cards == 0 {
+        return Vec::new();
+    }
+    let Some(state) = artifacts.narrative_state.as_ref() else {
+        return Vec::new();
+    };
+    let evidence = EvidenceIndex::new(artifacts);
+    state
+        .event_cards
+        .iter()
+        .enumerate()
+        .filter(|(_, card)| {
+            !crate::historical_phase_label_is_placeholder(&card.label)
+                && ids_have_supported_claim(&card.claim_log_ids, &evidence)
+                && !broad_generic_phase_support(card, &evidence)
+        })
+        .filter_map(|(index, card)| {
+            let reasons = historical_event_card_weakness_reasons(card, &evidence)
+                .into_iter()
+                .filter(|reason| {
+                    !reason.contains("missing claim_log_ids")
+                        && !reason.contains("supported Claim Log")
+                        && !reason.contains("broad whole-topic")
+                        && !reason.contains("missing source_ids")
+                })
+                .collect::<Vec<_>>();
+            if reasons.is_empty() {
+                None
+            } else {
+                Some(HistoricalEventCardSelection {
+                    index,
+                    label: card.label.clone(),
+                    reasons,
+                })
+            }
+        })
+        .take(max_cards)
+        .collect()
+}
+
+pub fn historical_enrichment_readiness_debt(
+    reason: &str,
+    missing_evidence: &str,
+) -> ResearchDebtItem {
+    ResearchDebtItem {
+        id: format!("narrative-enrichment-readiness-{reason}"),
+        severity: "high".to_string(),
+        failed_gate: Some("narrative_enrichment_readiness".to_string()),
+        missing_evidence: missing_evidence.to_string(),
+        required_source_class: None,
+        candidate_queries: Vec::new(),
+        next_check_actions: vec![
+            "Repair Source Cards and phase-specific supported Claim Log rows before event-card enrichment."
+                .to_string(),
+        ],
+        status: "open".to_string(),
+    }
 }
 
 pub fn build_historical_event_card_enrichment_prompt(
@@ -1650,6 +1709,60 @@ mod tests {
         let artifacts = artifacts_with_card(rich_card());
         let selected = select_weak_historical_event_cards(&artifacts, 2);
         assert!(selected.is_empty(), "unexpected reasons: {selected:?}");
+    }
+
+    #[test]
+    fn evidence_ready_selection_skips_placeholders_and_keeps_bounded_weak_cards() {
+        let mut weak_ready = rich_card();
+        weak_ready.development = Some("짧다".to_string());
+        weak_ready.causal_spine.clear();
+        weak_ready.interpretive_layers.clear();
+
+        let mut placeholder = weak_ready.clone();
+        placeholder.label = "근거 연결 국면".to_string();
+
+        let artifacts = ResearchControllerArtifacts {
+            source_cards: vec![source("S1")],
+            claim_log: vec![ResearchClaimLogEntry {
+                id: "C1".to_string(),
+                claim: "1904년 뤼순과 인천의 초기 전환은 일본과 러시아가 한국 병참로와 만주 전선 진입 조건을 둘러싸고 충돌한 국면이었다.".to_string(),
+                support_source_card_ids: vec!["S1".to_string()],
+                confidence: Some("medium".to_string()),
+                ..ResearchClaimLogEntry::default()
+            }],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![placeholder, weak_ready, rich_card()],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+
+        let weak_ready_reasons = historical_event_card_weakness_reasons_for_card(
+            &artifacts,
+            &artifacts.narrative_state.as_ref().unwrap().event_cards[1],
+        );
+        let selected = select_evidence_ready_weak_historical_event_cards(&artifacts, 1);
+        assert_eq!(selected.len(), 1, "reasons={weak_ready_reasons:?}");
+        assert_eq!(selected[0].index, 1);
+        assert!(selected[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("causal_spine")));
+    }
+
+    #[test]
+    fn readiness_debt_uses_narrative_enrichment_gate() {
+        let debt = historical_enrichment_readiness_debt(
+            "no_claim_log",
+            "supported Claim Log rows are required before event-card enrichment",
+        );
+
+        assert_eq!(
+            debt.failed_gate.as_deref(),
+            Some("narrative_enrichment_readiness")
+        );
+        assert!(debt.missing_evidence.contains("Claim Log"));
     }
 
     #[test]

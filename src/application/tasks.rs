@@ -24,7 +24,8 @@ use crate::state::{AppState, BenchmarkFixture};
 use liquid_acquisition::normalize_result_url;
 use liquid_acquisition::{collect_transient_repair_search_hints, RepairSearchHint};
 use liquid_research_core::{
-    finalize_research_output, normalize_ai_output, parse_research_artifact_block,
+    finalize_research_output, normalize_ai_output,
+    parse_research_artifact_block_with_budget_repair,
     repair_historical_planning_scaffold_from_visible_output, validate_research_artifacts,
     validate_research_output, validate_transient_repair_hint_evidence_provenance,
     ResearchQualityContext,
@@ -45,6 +46,7 @@ mod helpers;
 mod lifecycle_policy;
 mod narrative_enrichment;
 mod narrative_merge;
+mod phase_state;
 mod queue_workflow;
 mod repair_helpers;
 mod retry_policy;
@@ -79,6 +81,8 @@ use self::narrative_enrichment::*;
 #[allow(unused_imports)]
 use self::narrative_merge::*;
 #[allow(unused_imports)]
+use self::phase_state::*;
+#[allow(unused_imports)]
 use self::queue_workflow::*;
 #[allow(unused_imports)]
 pub(crate) use self::queue_workflow::{run_ai_task, spawn_ai_queue_workers};
@@ -97,6 +101,7 @@ const RESEARCH_STAGE_SOURCE_CARDS: &str = "source_cards";
 const RESEARCH_STAGE_CLAIM_LOG: &str = "claim_log";
 const RESEARCH_STAGE_DRAFT: &str = "draft";
 const RESEARCH_STAGE_QUALITY_GATE: &str = "quality_gate";
+const RESEARCH_STAGE_PHASE_STATE: &str = "phase_state";
 const RESEARCH_STAGE_NARRATIVE_ENRICHMENT: &str = "narrative_enrichment";
 const RESEARCH_STAGE_REPAIR_PLANNING: &str = "repair_planning";
 const RESEARCH_STAGE_EVIDENCE_REPAIR: &str = "evidence_repair";
@@ -3265,7 +3270,7 @@ reader_quality: None,
         ];
         let fingerprint = task_snapshot_fingerprint(&entries);
         assert_eq!(
-            fingerprint, 0xb64e344087098cdf,
+            fingerprint, 0x8c2e68d91d5e239e,
             "task snapshot fingerprint changed: {fingerprint:#018x}"
         );
 
