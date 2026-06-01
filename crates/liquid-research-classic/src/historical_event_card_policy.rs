@@ -418,7 +418,11 @@ fn broad_generic_phase_support(card: &NarrativeEventCard, evidence: &EvidenceInd
 }
 
 fn evidence_claim_text(evidence: &EvidenceIndex, claim_id: &str) -> String {
-    evidence.claim_texts.get(claim_id).cloned().unwrap_or_default()
+    evidence
+        .claim_texts
+        .get(claim_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn parse_enrichment_object(raw_json: &str) -> Result<Value, String> {

@@ -4525,6 +4525,17 @@ fn validate_reader_facing_internal_metadata_leaks(output: &str, failures: &mut V
         "outline_only_not_evidence",
         "repair_planning",
         "evidence_repair",
+        "source_pack",
+        "source pack status",
+        "source-pack status",
+        "source pack 상태",
+        "controller artifact",
+        "controller artifacts",
+        "research_controller",
+        "provider payload",
+        "resolved prompt",
+        "quality gate failed",
+        "validator-shaped",
     ] {
         if lower.contains(marker) {
             failures.push(format!(
@@ -23732,6 +23743,65 @@ evidence_layers: 공식 문서 / 보조 문서
             err.contains("reader-facing final answer leaks internal narrative or repair marker")
         );
         assert!(err.contains("topic_frame") || err.contains("section_outline"));
+    }
+
+    #[test]
+    fn rejects_final_answer_that_leaks_source_pack_status_repair_prose() {
+        let output = r#"
+## 최종 답변 (Final Answer)
+
+시간축과 chronology 측면에서는 source pack 상태는 success 이고 validator-shaped artifact repair가 완료되었으므로 열린 연구 부채 2건을 기준으로 본문을 보강해야 한다.
+
+# Verification Appendix
+[RESEARCH_ARTIFACT_JSON]
+```json
+{
+  "version": 1,
+  "source_cards": [
+    {
+      "id": "S1",
+      "url": "https://www.britannica.com/event/French-Revolution",
+      "title": "French Revolution",
+      "source_class": "authoritative_secondary"
+    }
+  ],
+  "claim_log": [
+    {
+      "id": "C1",
+      "claim": "혁명 전개는 단계별로 봐야 한다.",
+      "support_source_card_ids": ["S1"]
+    }
+  ],
+  "conflict_map": [],
+  "research_debt": []
+}
+```
+"#;
+        let context = ResearchQualityContext {
+            file_prefix: "[AI-Research]",
+            file_type: "md",
+            web_search_requested: false,
+            research_intensity: Some("medium"),
+            quality_depth: Some("medium"),
+            research_topic: Some(
+                "French Revolution background, development, impact, and significance",
+            ),
+            research_instructions: None,
+            evidence_subject: Some(
+                "French Revolution background, development, impact, and significance",
+            ),
+        };
+
+        let err = validate_research_output(output, &context).unwrap_err();
+
+        assert!(
+            err.contains("reader-facing final answer leaks internal narrative or repair marker")
+        );
+        assert!(
+            err.contains("source pack status")
+                || err.contains("source pack 상태")
+                || err.contains("validator-shaped")
+        );
     }
 
     #[test]
