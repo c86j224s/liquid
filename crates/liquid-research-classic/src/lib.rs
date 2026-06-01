@@ -9,10 +9,12 @@ use liquid_research_core::{
 };
 
 mod artifact_merge;
+mod historical_event_card_policy;
 mod repair_policy;
 mod scaffold_policy;
 
 pub use artifact_merge::*;
+pub use historical_event_card_policy::*;
 pub use repair_policy::*;
 pub use scaffold_policy::*;
 

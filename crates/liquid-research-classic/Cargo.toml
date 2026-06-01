@@ -7,4 +7,5 @@ edition = "2021"
 liquid-protocol = { path = "../liquid-protocol" }
 liquid-research-artifacts = { path = "../liquid-research-artifacts" }
 liquid-research-core = { path = "../liquid-research-core" }
+serde_json = { workspace = true }
 url = { workspace = true }
