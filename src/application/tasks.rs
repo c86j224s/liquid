@@ -14,9 +14,11 @@ use crate::contracts::{
     ResearchClaimLogEntry, ResearchConflictMapEntry, ResearchSourceCard,
 };
 use crate::contracts::{
-    ResearchControllerArtifacts, ResearchControllerEvent, ResearchDebtItem,
-    ResearchQualityGateArtifact, ResearchSourceCoverageMiss, ResearchSourceDiagnosticsEnvelope,
-    TaskInfo, TaskMetadata, TaskUpdateEvent, PI_LOCAL_SOURCE_PACK_CLAIM_LOG_REPAIR_WARNING,
+    ResearchControllerArtifacts, ResearchControllerEvent, ResearchDebtItem, ResearchIterationState,
+    ResearchQualityGateArtifact, ResearchRunBudget, ResearchRunTerminalStatus,
+    ResearchSourceCoverageMiss, ResearchSourceDiagnosticsEnvelope, ResearchWorkCheckpoint,
+    ResearchWorkItem, ResearchWorkItemKind, ResearchWorkItemStatus, TaskInfo, TaskMetadata,
+    TaskUpdateEvent, PI_LOCAL_SOURCE_PACK_CLAIM_LOG_REPAIR_WARNING,
     PI_LOCAL_SOURCE_PACK_SOURCE_CARD_SCAFFOLD_WARNING,
 };
 use crate::state::{AppState, BenchmarkFixture};
@@ -49,6 +51,7 @@ mod narrative_merge;
 mod phase_state;
 mod queue_workflow;
 mod repair_helpers;
+mod research_work_queue;
 mod retry_policy;
 mod runtime_adapters;
 use self::benchmark_fixture::{
@@ -88,6 +91,8 @@ use self::queue_workflow::*;
 pub(crate) use self::queue_workflow::{run_ai_task, spawn_ai_queue_workers};
 #[allow(unused_imports)]
 use self::repair_helpers::*;
+#[allow(unused_imports)]
+use self::research_work_queue::*;
 pub(crate) use self::retry_policy::{
     is_retryable_task, merge_retry_engine_metadata, retry_task_metadata,
 };
@@ -948,6 +953,7 @@ mod tests {
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -979,6 +985,7 @@ mod tests {
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(ResearchQualityGateArtifact {
                 status: "passed".to_string(),
                 failure_messages: Vec::new(),
@@ -1065,6 +1072,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1077,6 +1085,7 @@ mod tests {
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1155,6 +1164,7 @@ mod tests {
                     }],
                 }),
             }),
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1170,6 +1180,7 @@ mod tests {
                 research_debt: Vec::new(),
                 narrative_state: None,
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             },
@@ -1213,6 +1224,7 @@ mod tests {
                     }],
                     reader_critique: None,
                 }),
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             },
@@ -1285,6 +1297,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1303,6 +1316,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1427,6 +1441,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1458,6 +1473,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1536,6 +1552,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1566,6 +1583,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1634,6 +1652,7 @@ mod tests {
                 ..NarrativeState::default()
             }),
 reader_quality: None,
+research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1688,6 +1707,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
 reader_quality: None,
+research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1746,6 +1766,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1780,6 +1801,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
 reader_quality: None,
+research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1817,6 +1839,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1832,6 +1855,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1867,6 +1891,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1960,6 +1985,7 @@ reader_quality: None,
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -2125,6 +2151,7 @@ reader_quality: None,
                     ..NarrativeState::default()
                 }),
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             }),
@@ -2261,6 +2288,7 @@ reader_quality: None,
                     ..NarrativeState::default()
                 }),
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             }),
@@ -2311,6 +2339,7 @@ reader_quality: None,
                     ..NarrativeState::default()
                 }),
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             }),
@@ -2373,6 +2402,7 @@ reader_quality: None,
                     ..NarrativeState::default()
                 }),
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             }),
@@ -2438,6 +2468,7 @@ reader_quality: None,
                     ..NarrativeState::default()
                 }),
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             }),
@@ -2502,6 +2533,7 @@ reader_quality: None,
                     ..NarrativeState::default()
                 }),
                 reader_quality: None,
+                research_iteration_state: None,
                 quality_gate: None,
                 warnings: Vec::new(),
             }),
@@ -3270,7 +3302,7 @@ reader_quality: None,
         ];
         let fingerprint = task_snapshot_fingerprint(&entries);
         assert_eq!(
-            fingerprint, 0x8c2e68d91d5e239e,
+            fingerprint, 0xf9060bbb14bb631c,
             "task snapshot fingerprint changed: {fingerprint:#018x}"
         );
 
@@ -3364,6 +3396,7 @@ reader_quality: None,
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(ResearchQualityGateArtifact {
                 status: "failed".to_string(),
                 failure_messages: vec!["source audit missing".to_string()],
@@ -3473,6 +3506,7 @@ reader_quality: None,
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(ResearchQualityGateArtifact {
                 status: "failed".to_string(),
                 failure_messages: vec!["thin evidence".to_string()],
@@ -3522,6 +3556,7 @@ reader_quality: None,
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(ResearchQualityGateArtifact {
                 status: "failed".to_string(),
                 failure_messages: vec!["artifact scaffolded".to_string()],
@@ -3638,6 +3673,7 @@ reader_quality: None,
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(ResearchQualityGateArtifact {
                 status: "failed".to_string(),
                 failure_messages: vec!["stale gate".to_string()],
@@ -3741,6 +3777,7 @@ reader_quality: None,
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -4584,6 +4621,7 @@ Official Source 1 confirms the rollout keeps a public deployment checklist. Offi
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(ResearchQualityGateArtifact {
                 status: "failed".to_string(),
                 failure_messages: vec!["stale conflict state".to_string()],

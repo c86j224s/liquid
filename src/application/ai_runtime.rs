@@ -820,6 +820,7 @@ repeat the provider/source-pack details here
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1238,6 +1239,7 @@ repeat the provider/source-pack details here
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1368,6 +1370,7 @@ repeat the provider/source-pack details here
                     }],
                 }),
             }),
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -1416,6 +1419,7 @@ repeat the provider/source-pack details here
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };

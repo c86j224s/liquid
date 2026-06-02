@@ -321,6 +321,138 @@ pub struct ResearchControllerEvent {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchWorkItemKind {
+    #[default]
+    ArtifactStabilization,
+    SourceCardRepair,
+    ClaimLogRepair,
+    #[serde(alias = "historical_phase_state")]
+    PhasePlanBuild,
+    PhasePlanReview,
+    PhaseClaimReadiness,
+    #[serde(alias = "historical_narrative_enrichment")]
+    EventCardEnrichment,
+    CausalContinuityReview,
+    FinalAnswerRender,
+    ResearchAcceptanceReview,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchWorkItemStatus {
+    #[default]
+    Pending,
+    Running,
+    Completed,
+    Blocked,
+    Skipped,
+    Failed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchRunTerminalStatus {
+    #[default]
+    #[serde(alias = "completed")]
+    Accepted,
+    PartialTrusted,
+    NoProgress,
+    BudgetExhausted,
+    #[serde(alias = "blocked")]
+    BlockedNeedsUser,
+    Failed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct ResearchRunBudget {
+    #[serde(default)]
+    pub max_waves: i64,
+    #[serde(default)]
+    pub max_model_calls: i64,
+    #[serde(default)]
+    pub max_work_items_per_wave: usize,
+    #[serde(default)]
+    pub max_attempts_per_wave: usize,
+    #[serde(default)]
+    pub max_attempts_per_work_item: i64,
+    #[serde(default)]
+    pub max_total_work_item_attempts: i64,
+    #[serde(default)]
+    pub max_no_progress_waves: i64,
+    #[serde(default)]
+    pub waves_used: i64,
+    #[serde(default)]
+    pub model_calls_used: i64,
+    #[serde(default)]
+    pub work_items_run: i64,
+    #[serde(default)]
+    pub attempts_used: i64,
+    #[serde(default)]
+    pub no_progress_waves: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct ResearchWorkCheckpoint {
+    #[serde(default)]
+    pub wave: i64,
+    pub work_item_id: String,
+    pub work_kind: ResearchWorkItemKind,
+    pub status: ResearchWorkItemStatus,
+    #[serde(default)]
+    pub attempt_count: i64,
+    pub event_card_count: usize,
+    pub open_debt_count: usize,
+    pub input_fingerprint: Option<String>,
+    pub output_fingerprint: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct ResearchWorkItem {
+    pub id: String,
+    pub kind: ResearchWorkItemKind,
+    pub status: ResearchWorkItemStatus,
+    pub target: Option<String>,
+    #[serde(default)]
+    pub blocking: bool,
+    #[serde(default)]
+    pub debt_ids: Vec<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub phase_ids: Vec<String>,
+    #[serde(default)]
+    pub claim_log_ids: Vec<String>,
+    #[serde(default)]
+    pub source_card_ids: Vec<String>,
+    #[serde(default)]
+    pub created_from: Vec<String>,
+    #[serde(default)]
+    pub max_attempts: i64,
+    pub attempt_count: i64,
+    pub last_wave: Option<i64>,
+    pub last_error: Option<String>,
+    pub next_action: Option<String>,
+    pub input_fingerprint: Option<String>,
+    pub output_fingerprint: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+pub struct ResearchIterationState {
+    pub current_wave: i64,
+    pub max_waves: i64,
+    pub terminal_status: Option<ResearchRunTerminalStatus>,
+    pub summary: Option<String>,
+    pub budget: Option<ResearchRunBudget>,
+    #[serde(default)]
+    pub work_items: Vec<ResearchWorkItem>,
+    #[serde(default)]
+    pub checkpoints: Vec<ResearchWorkCheckpoint>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct ResearchSourceCard {
     pub id: String,
@@ -712,6 +844,8 @@ pub struct ResearchControllerArtifacts {
     pub narrative_state: Option<NarrativeState>,
     #[serde(default)]
     pub reader_quality: Option<ReaderQualityArtifacts>,
+    #[serde(default)]
+    pub research_iteration_state: Option<ResearchIterationState>,
     pub quality_gate: Option<ResearchQualityGateArtifact>,
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -997,6 +1131,7 @@ mod tests {
 
         assert!(artifacts.narrative_state.is_none());
         assert!(artifacts.reader_quality.is_none());
+        assert!(artifacts.research_iteration_state.is_none());
         assert!(artifacts.source_cards.is_empty());
         assert!(artifacts.claim_log.is_empty());
     }
@@ -1075,5 +1210,93 @@ mod tests {
         let serialized = serde_json::to_value(&reader_quality).expect("serialize reader quality");
         assert!(serialized.get("argument_graph").is_some());
         assert!(serialized.get("section_briefs").is_some());
+    }
+
+    #[test]
+    fn research_iteration_state_round_trips_bounded_queue_checkpoint_fields() {
+        let artifacts: ResearchControllerArtifacts = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "source_cards": [],
+            "claim_log": [],
+            "conflict_map": [],
+            "research_debt": [],
+            "research_iteration_state": {
+                "current_wave": 1,
+                "max_waves": 3,
+                "terminal_status": "accepted",
+                "summary": "wave 1/3 pending=0 completed=2 blocked=0 partial=0",
+                "budget": {
+                    "max_waves": 3,
+                    "max_model_calls": 12,
+                    "max_work_items_per_wave": 3,
+                    "max_attempts_per_wave": 2,
+                    "max_attempts_per_work_item": 2,
+                    "max_total_work_item_attempts": 12,
+                    "max_no_progress_waves": 2,
+                    "waves_used": 1,
+                    "model_calls_used": 2,
+                    "work_items_run": 2,
+                    "attempts_used": 2,
+                    "no_progress_waves": 0
+                },
+                "work_items": [{
+                    "id": "phase-plan-build",
+                    "kind": "phase_plan_build",
+                    "status": "completed",
+                    "target": "narrative_state.event_cards",
+                    "blocking": true,
+                    "debt_ids": ["D1"],
+                    "dependencies": [],
+                    "phase_ids": ["SO1"],
+                    "claim_log_ids": ["C1"],
+                    "source_card_ids": ["S1"],
+                    "created_from": ["historical_phase_state_applicable", "research_debt:D1"],
+                    "max_attempts": 2,
+                    "attempt_count": 1,
+                    "last_wave": 1,
+                    "last_error": null,
+                    "next_action": "Review grounded phase cards before acceptance.",
+                    "input_fingerprint": "fnv1a:abc",
+                    "output_fingerprint": "fnv1a:def",
+                    "detail": "phases=2 ready=2"
+                }],
+                "checkpoints": [{
+                    "wave": 1,
+                    "work_item_id": "phase-plan-build",
+                    "work_kind": "phase_plan_build",
+                    "status": "completed",
+                    "attempt_count": 1,
+                    "event_card_count": 2,
+                    "open_debt_count": 0,
+                    "input_fingerprint": "fnv1a:abc",
+                    "output_fingerprint": "fnv1a:def",
+                    "detail": "phases=2 ready=2"
+                }]
+            },
+            "quality_gate": null,
+            "warnings": []
+        }))
+        .expect("research iteration state should deserialize through liquid-protocol");
+
+        let queue = artifacts
+            .research_iteration_state
+            .expect("queue state should be present");
+        assert_eq!(queue.current_wave, 1);
+        assert_eq!(queue.max_waves, 3);
+        assert_eq!(queue.work_items.len(), 1);
+        assert_eq!(queue.checkpoints.len(), 1);
+        assert_eq!(
+            queue.terminal_status,
+            Some(ResearchRunTerminalStatus::Accepted)
+        );
+        assert_eq!(
+            queue.work_items[0].kind,
+            ResearchWorkItemKind::PhasePlanBuild
+        );
+        assert_eq!(queue.work_items[0].phase_ids, vec!["SO1".to_string()]);
+        assert_eq!(
+            queue.checkpoints[0].input_fingerprint.as_deref(),
+            Some("fnv1a:abc")
+        );
     }
 }

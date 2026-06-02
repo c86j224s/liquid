@@ -15599,6 +15599,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -15669,6 +15670,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -15771,6 +15773,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -15867,6 +15870,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17449,6 +17453,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17795,6 +17800,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17849,6 +17855,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17912,6 +17919,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17972,6 +17980,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -18019,6 +18028,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -18070,6 +18080,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -18124,6 +18135,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -18183,6 +18195,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -18244,6 +18257,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(crate::models::ResearchQualityGateArtifact {
                 status: "passed".to_string(),
                 failure_messages: Vec::new(),
@@ -24067,6 +24081,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -24096,6 +24111,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -24134,6 +24150,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: Some(NarrativeState::default()),
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -24163,6 +24180,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -27018,6 +27036,7 @@ Historical event scaffold repair guidance:
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {

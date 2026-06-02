@@ -12,6 +12,7 @@ Envelope:
   "claim_log": [],
   "conflict_map": [],
   "research_debt": [],
+  "research_iteration_state": {},
   "reader_quality": {},
   "quality_gate": {},
   "warnings": []
@@ -25,6 +26,7 @@ Fields:
 - `claim_log`: `id`, `claim`, `claim_type`, `support_source_card_ids`, `support_urls`, `confidence`, `uncertainty_note`, `needs_verification`
 - `conflict_map`: `id`, `topic`, `conflicting_claim_ids`, `source_card_ids`, `resolution_status`, `resolution_note`, `promoted_to_debt`
 - `research_debt`: `id`, `severity`, `failed_gate`, `missing_evidence`, `required_source_class`, `candidate_queries`, `next_check_actions`, `status`
+- `research_iteration_state`: optional bounded work-queue checkpoint state for resumable `phase_state` / `narrative_enrichment` waves; stores only typed work items, layered budgets, terminal status, compact checkpoints, fingerprints, and queue summaries
 - `narrative_state`: optional outline continuity artifact only; never evidence
 - `reader_quality`: optional reader-planning artifact only; never evidence
 - `quality_gate`: `status`, `failure_messages`, `unsupported_claim_count`, `unresolved_conflict_count`, `open_debt_count`
@@ -45,13 +47,60 @@ Finalization notes:
 - hidden machine-readable JSON remains appended after the visible appendix and does not count as visible compliance by itself
 - artifact stabilization may parse oversized but syntactically valid machine artifact JSON into compact persisted controller artifacts and record warnings/debt; it must not persist the raw oversized JSON
 - narrative enrichment reads persisted artifacts and writes back only sanitized enriched artifacts, warnings, and specific research debt; raw enrichment prompts are transient and raw model output, provider payloads, source diagnostics, and controller artifact dumps remain local-only
+- bounded work-queue checkpoints are sanitized controller state only: no raw prompts, provider payloads, source diagnostics, or raw model output are stored in `research_iteration_state`
 
 Backward compatibility:
 
 - event-only JSON from the earlier controller remains readable because missing fields default empty
 - older artifacts without `narrative_state` deserialize as `None`
 - older artifacts without `reader_quality` deserialize as `None`
+- older artifacts without `research_iteration_state` deserialize as `None`
 - backward compatibility stays additive, but strict/high historical runs are expected to populate at least one of these hidden planning artifacts with useful depth instead of leaving both empty
+
+## `research_iteration_state`
+
+Additive schema stored inside `research_controller_artifacts_json`:
+
+```json
+{
+  "current_wave": 1,
+  "max_waves": 3,
+  "terminal_status": "accepted",
+  "summary": "wave 1/3 pending=0 completed=2 blocked=0 failed=0",
+  "budget": {
+    "max_waves": 3,
+    "max_model_calls": 12,
+    "max_work_items_per_wave": 3,
+    "max_attempts_per_wave": 2,
+    "max_attempts_per_work_item": 2,
+    "max_total_work_item_attempts": 12,
+    "max_no_progress_waves": 2,
+    "waves_used": 1,
+    "model_calls_used": 2,
+    "work_items_run": 2,
+    "attempts_used": 2,
+    "no_progress_waves": 0
+  },
+  "work_items": [],
+  "checkpoints": []
+}
+```
+
+Field roles:
+
+- `work_items`: typed controller-owned queue rows such as `artifact_stabilization`, `source_card_repair`, `claim_log_repair`, `phase_plan_build`, `phase_plan_review`, `phase_claim_readiness`, `event_card_enrichment`, `causal_continuity_review`, `final_answer_render`, and `research_acceptance_review`
+- each work item stores only compact controller state: `id`, `kind`, `status`, `last_wave`, `target`, `blocking`, mapped `debt_ids`, `dependencies`, `phase_ids`, `claim_log_ids`, `source_card_ids`, `created_from`, `max_attempts`, `attempt_count`, `last_error`, `next_action`, `input_fingerprint`, `output_fingerprint`, and compact `detail`
+- `budget`: layered wave, model-call, work-item, and attempt controls plus usage counters used to stop repeated controller work safely
+- `terminal_status`: additive terminal state such as `accepted`, `partial_trusted`, `blocked_needs_user`, `budget_exhausted`, `no_progress`, or `failed`
+- `checkpoints`: compact per-wave/per-item snapshots with item kind, status, attempt count, event-card count, open-debt count, fingerprints, and compact detail
+- `summary`: terse progress string for UI/debug visibility only
+
+Hygiene notes:
+
+- `research_iteration_state` is controller checkpoint state, not evidence
+- debt-to-work-item mapping is for resumable controller scheduling only; Claim Log and Source Cards remain the evidence boundary
+- queue routing stays conservative: current execution still runs only through the existing `phase_state` and `narrative_enrichment` stages; other work-item kinds are explicit checkpoint/debt views until a routed stage exists
+- queue checkpoints must remain compact and sanitized; do not persist prompts, provider payloads, raw model output, or raw diagnostics here
 
 ## `narrative_state`
 

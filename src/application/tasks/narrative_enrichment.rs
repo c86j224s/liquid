@@ -31,6 +31,7 @@ pub(super) async fn run_narrative_enrichment_stage(
     iteration: i64,
     max_iterations: i64,
     controller_events: &mut Vec<ResearchControllerEvent>,
+    max_model_calls: usize,
 ) -> NarrativeEnrichmentStageReport {
     let evidence_subject = research_source_subject_for_task(task, user_prompt);
     let mut artifacts = load_task_research_artifacts(state, task.id)
@@ -88,7 +89,7 @@ pub(super) async fn run_narrative_enrichment_stage(
 
     let selections = select_evidence_ready_weak_historical_event_cards(
         &artifacts,
-        MAX_HISTORICAL_EVENT_CARDS_PER_ITERATION,
+        MAX_HISTORICAL_EVENT_CARDS_PER_ITERATION.min(max_model_calls),
     );
     if selections.is_empty() {
         push_unique_warning(

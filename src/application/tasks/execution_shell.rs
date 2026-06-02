@@ -265,17 +265,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
             Some(research_source_subject_for_task(&task, user_prompt)),
         )
         .await;
-        let _phase_state_report = run_phase_state_stage(
-            state,
-            &task,
-            file_prefix,
-            user_prompt,
-            iteration,
-            max_iterations,
-            &mut controller_events,
-        )
-        .await;
-        let _enrichment_report = run_narrative_enrichment_stage(
+        let _iteration_state = run_bounded_research_work_queue(
             state,
             &task,
             &runtime,
@@ -320,6 +310,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
         .await
         {
             Ok(validated_output) => {
+                mark_research_work_queue_accepted(state, task.id).await;
                 update_research_controller_progress(
                     state,
                     task.id,
@@ -431,6 +422,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
                 );
             }
             Err(failure) => {
+                mark_research_work_queue_budget_exhausted(state, task.id).await;
                 update_research_controller_progress(
                     state,
                     task.id,
