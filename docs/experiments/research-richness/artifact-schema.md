@@ -26,7 +26,7 @@ Fields:
 - `claim_log`: `id`, `claim`, `claim_type`, `support_source_card_ids`, `support_urls`, `confidence`, `uncertainty_note`, `needs_verification`
 - `conflict_map`: `id`, `topic`, `conflicting_claim_ids`, `source_card_ids`, `resolution_status`, `resolution_note`, `promoted_to_debt`
 - `research_debt`: `id`, `severity`, `failed_gate`, `missing_evidence`, `required_source_class`, `candidate_queries`, `next_check_actions`, `status`
-- `research_iteration_state`: optional bounded work-queue checkpoint state for resumable `phase_state` / `narrative_enrichment` waves; stores only typed work items, layered budgets, terminal status, compact checkpoints, fingerprints, and queue summaries
+- `research_iteration_state`: optional bounded work-queue checkpoint state for resumable routed controller waves, including artifact stabilization, source/claim repair, phase/narrative review, final-answer render, and acceptance review; stores only typed work items, layered budgets, terminal status, compact checkpoints, fingerprints, and queue summaries
 - `narrative_state`: optional outline continuity artifact only; never evidence
 - `reader_quality`: optional reader-planning artifact only; never evidence
 - `quality_gate`: `status`, `failure_messages`, `unsupported_claim_count`, `unresolved_conflict_count`, `open_debt_count`
@@ -81,7 +81,29 @@ Additive schema stored inside `research_controller_artifacts_json`:
     "attempts_used": 2,
     "no_progress_waves": 0
   },
-  "work_items": [],
+  "work_items": [
+    {
+      "id": "phase_claim_readiness",
+      "kind": "phase_claim_readiness",
+      "status": "pending",
+      "last_wave": null,
+      "target": "narrative_state.event_cards.claim_log_ids",
+      "blocking": true,
+      "debt_ids": [],
+      "dependencies": ["phase_plan_build"],
+      "phase_ids": ["phase-1"],
+      "claim_log_ids": ["C1"],
+      "source_card_ids": ["S1"],
+      "created_from": ["historical_phase_state_applicable"],
+      "max_attempts": 2,
+      "attempt_count": 0,
+      "last_error": null,
+      "next_action": "Ground each phase with phase-specific Claim Log and Source Card support before enrichment.",
+      "input_fingerprint": "fnv1a:...",
+      "output_fingerprint": null,
+      "detail": "ready_cards=0 total_cards=1 debt=0"
+    }
+  ],
   "checkpoints": []
 }
 ```
@@ -99,7 +121,8 @@ Hygiene notes:
 
 - `research_iteration_state` is controller checkpoint state, not evidence
 - debt-to-work-item mapping is for resumable controller scheduling only; Claim Log and Source Cards remain the evidence boundary
-- queue routing stays conservative: current execution still runs only through the existing `phase_state` and `narrative_enrichment` stages; other work-item kinds are explicit checkpoint/debt views until a routed stage exists
+- queue routing stays conservative but every declared work-item kind has a bounded executor path: deterministic artifact stabilization, public-evidence source/claim repair or explicit blocker, phase/readiness/causal review, bounded narrative enrichment, final-answer rendering, and acceptance review. A route may block when no safe deterministic repair is available, but it must not be unsupported or invisible.
+- phase/card readiness and causal-continuity completion require resolved, public Source Card IDs and supported Claim Log IDs; model-minted or stale refs remain open/blocked work rather than queue success
 - queue checkpoints must remain compact and sanitized; do not persist prompts, provider payloads, raw model output, or raw diagnostics here
 
 ## `narrative_state`

@@ -272,6 +272,8 @@ pub(super) async fn execute_ai_task_with_quality_loop(
             model_name,
             source,
             file_prefix,
+            file_type,
+            &normalized_output,
             user_prompt,
             iteration,
             max_iterations,

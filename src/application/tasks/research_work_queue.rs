@@ -1,8 +1,12 @@
 use super::*;
+use liquid_protocol::{
+    NarrativeCausalLink, NarrativeCausalSpineStep, NarrativeEventCard, NarrativeInterpretiveLayer,
+};
 use liquid_research_classic::{
     historical_event_card_enrichment_applies, historical_phase_state_should_run,
     select_evidence_ready_weak_historical_event_cards,
 };
+use liquid_research_core::normalize_public_evidence_url;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -60,6 +64,8 @@ pub(super) async fn run_bounded_research_work_queue(
     model_name: &str,
     source: &str,
     file_prefix: &str,
+    file_type: &str,
+    normalized_output: &str,
     user_prompt: &str,
     iteration: i64,
     max_iterations: i64,
@@ -185,11 +191,14 @@ pub(super) async fn run_bounded_research_work_queue(
                 model_name,
                 source,
                 file_prefix,
+                file_type,
+                normalized_output,
                 user_prompt,
                 iteration,
                 max_iterations,
                 controller_events,
                 &work_item.kind,
+                &work_item.debt_ids,
                 remaining_model_calls,
             )
             .await;
@@ -415,8 +424,9 @@ fn refresh_research_iteration_state(
             ResearchWorkItemKind::ArtifactStabilization,
         )
         .is_empty(),
-        needs_run: false,
-        max_attempts: 0,
+        needs_run: !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ArtifactStabilization)
+            .is_empty(),
+        max_attempts: budget.max_attempts_per_work_item.max(1),
         debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ArtifactStabilization),
         dependencies: Vec::new(),
         phase_ids: phase_ids.clone(),
@@ -439,18 +449,20 @@ fn refresh_research_iteration_state(
         ),
     });
 
+    let source_card_repair_debt_ids =
+        debt_ids_for_kind(&debt_index, ResearchWorkItemKind::SourceCardRepair);
+    let source_card_repair_needed =
+        artifacts.source_cards.is_empty() || !source_card_repair_debt_ids.is_empty();
     add_draft(WorkItemDraft {
         id: SOURCE_CARD_REPAIR_WORK_ITEM_ID,
         kind: ResearchWorkItemKind::SourceCardRepair,
         target: "source_cards",
         blocking: true,
-        applicable: artifacts.source_cards.is_empty()
-            || !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::SourceCardRepair).is_empty(),
-        needs_attention: artifacts.source_cards.is_empty()
-            || !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::SourceCardRepair).is_empty(),
-        needs_run: false,
-        max_attempts: 0,
-        debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::SourceCardRepair),
+        applicable: source_card_repair_needed,
+        needs_attention: source_card_repair_needed,
+        needs_run: source_card_repair_needed,
+        max_attempts: budget.max_attempts_per_work_item.max(1),
+        debt_ids: source_card_repair_debt_ids.clone(),
         dependencies: Vec::new(),
         phase_ids: phase_ids.clone(),
         claim_log_ids: phase_claim_log_ids.clone(),
@@ -472,22 +484,24 @@ fn refresh_research_iteration_state(
         detail: format!(
             "source_cards={} debt={}",
             artifacts.source_cards.len(),
-            debt_ids_for_kind(&debt_index, ResearchWorkItemKind::SourceCardRepair).len()
+            source_card_repair_debt_ids.len()
         ),
     });
 
+    let claim_log_repair_debt_ids =
+        debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ClaimLogRepair);
+    let claim_log_repair_needed =
+        artifacts.claim_log.is_empty() || !claim_log_repair_debt_ids.is_empty();
     add_draft(WorkItemDraft {
         id: CLAIM_LOG_REPAIR_WORK_ITEM_ID,
         kind: ResearchWorkItemKind::ClaimLogRepair,
         target: "claim_log",
         blocking: true,
-        applicable: artifacts.claim_log.is_empty()
-            || !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ClaimLogRepair).is_empty(),
-        needs_attention: artifacts.claim_log.is_empty()
-            || !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ClaimLogRepair).is_empty(),
-        needs_run: false,
-        max_attempts: 0,
-        debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ClaimLogRepair),
+        applicable: claim_log_repair_needed,
+        needs_attention: claim_log_repair_needed,
+        needs_run: claim_log_repair_needed,
+        max_attempts: budget.max_attempts_per_work_item.max(1),
+        debt_ids: claim_log_repair_debt_ids.clone(),
         dependencies: Vec::new(),
         phase_ids: phase_ids.clone(),
         claim_log_ids: phase_claim_log_ids.clone(),
@@ -509,7 +523,7 @@ fn refresh_research_iteration_state(
         detail: format!(
             "claim_log={} debt={}",
             artifacts.claim_log.len(),
-            debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ClaimLogRepair).len()
+            claim_log_repair_debt_ids.len()
         ),
     });
 
@@ -557,8 +571,8 @@ fn refresh_research_iteration_state(
         blocking: true,
         applicable: phase_applicable || !phase_plan_debt_ids.is_empty(),
         needs_attention: phase_card_count == 0 || !phase_plan_debt_ids.is_empty(),
-        needs_run: false,
-        max_attempts: 0,
+        needs_run: phase_applicable && (phase_card_count == 0 || !phase_plan_debt_ids.is_empty()),
+        max_attempts: budget.max_attempts_per_work_item.max(1),
         debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::PhasePlanReview),
         dependencies: vec![PHASE_PLAN_BUILD_WORK_ITEM_ID.to_string()],
         phase_ids: phase_ids.clone(),
@@ -593,8 +607,9 @@ fn refresh_research_iteration_state(
         blocking: true,
         applicable: phase_applicable || !phase_plan_debt_ids.is_empty(),
         needs_attention: ready_phase_card_count < phase_card_count || !phase_plan_debt_ids.is_empty(),
-        needs_run: false,
-        max_attempts: 0,
+        needs_run: phase_applicable
+            && (ready_phase_card_count < phase_card_count || !phase_plan_debt_ids.is_empty()),
+        max_attempts: budget.max_attempts_per_work_item.max(1),
         debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::PhaseClaimReadiness),
         dependencies: vec![PHASE_PLAN_BUILD_WORK_ITEM_ID.to_string()],
         phase_ids: phase_ids.clone(),
@@ -679,8 +694,9 @@ fn refresh_research_iteration_state(
             || weak_ready_card_count > 0,
         needs_attention: !has_grounded_causal_depth(artifacts)
             || !causal_review_debt_ids.is_empty(),
-        needs_run: false,
-        max_attempts: 0,
+        needs_run: narrative_applicable
+            && (!has_grounded_causal_depth(artifacts) || !causal_review_debt_ids.is_empty()),
+        max_attempts: budget.max_attempts_per_work_item.max(1),
         debt_ids: causal_review_debt_ids.clone(),
         dependencies: vec![EVENT_CARD_ENRICHMENT_WORK_ITEM_ID.to_string()],
         phase_ids: phase_ids.clone(),
@@ -716,8 +732,9 @@ fn refresh_research_iteration_state(
             .is_empty(),
         needs_attention: !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::FinalAnswerRender)
             .is_empty(),
-        needs_run: false,
-        max_attempts: 0,
+        needs_run: !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::FinalAnswerRender)
+            .is_empty(),
+        max_attempts: budget.max_attempts_per_work_item.max(1),
         debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::FinalAnswerRender),
         dependencies: vec![EVENT_CARD_ENRICHMENT_WORK_ITEM_ID.to_string()],
         phase_ids: phase_ids.clone(),
@@ -751,8 +768,9 @@ fn refresh_research_iteration_state(
             ResearchWorkItemKind::ResearchAcceptanceReview,
         )
         .is_empty(),
-        needs_run: false,
-        max_attempts: 0,
+        needs_run: !debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ResearchAcceptanceReview)
+            .is_empty(),
+        max_attempts: budget.max_attempts_per_work_item.max(1),
         debt_ids: debt_ids_for_kind(&debt_index, ResearchWorkItemKind::ResearchAcceptanceReview),
         dependencies: vec![FINAL_ANSWER_RENDER_WORK_ITEM_ID.to_string()],
         phase_ids,
@@ -824,8 +842,17 @@ fn realize_work_item(
         &draft.source_card_ids,
         &draft.debt_ids,
     );
+    let previously_completed_same_input = previous.is_some_and(|item| {
+        item.status == ResearchWorkItemStatus::Completed
+            && item
+                .input_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| fingerprint == input_fingerprint)
+    });
     let attempt_budget_exhausted = draft.max_attempts > 0 && attempt_count >= draft.max_attempts;
-    let status = if draft.needs_run && !dependency_blocked {
+    let status = if previously_completed_same_input {
+        ResearchWorkItemStatus::Completed
+    } else if draft.needs_run && !dependency_blocked {
         if draft.max_attempts > 0 && attempt_count >= draft.max_attempts {
             ResearchWorkItemStatus::Blocked
         } else {
@@ -1082,12 +1109,17 @@ fn research_run_budget_for(task: &TaskInfo) -> ResearchRunBudget {
 
 fn routed_stage_for_kind(kind: &ResearchWorkItemKind) -> Option<&'static str> {
     match kind {
+        ResearchWorkItemKind::ArtifactStabilization => Some(RESEARCH_STAGE_QUALITY_GATE),
+        ResearchWorkItemKind::SourceCardRepair | ResearchWorkItemKind::ClaimLogRepair => {
+            Some(RESEARCH_STAGE_EVIDENCE_REPAIR)
+        }
         ResearchWorkItemKind::PhasePlanBuild
         | ResearchWorkItemKind::PhasePlanReview
         | ResearchWorkItemKind::PhaseClaimReadiness => Some(RESEARCH_STAGE_PHASE_STATE),
         ResearchWorkItemKind::EventCardEnrichment
         | ResearchWorkItemKind::CausalContinuityReview => Some(RESEARCH_STAGE_NARRATIVE_ENRICHMENT),
-        _ => None,
+        ResearchWorkItemKind::FinalAnswerRender => Some(RESEARCH_STAGE_FINAL),
+        ResearchWorkItemKind::ResearchAcceptanceReview => Some(RESEARCH_STAGE_QUALITY_GATE),
     }
 }
 
@@ -1099,17 +1131,35 @@ async fn execute_routed_work_item(
     model_name: &str,
     source: &str,
     file_prefix: &str,
+    file_type: &str,
+    normalized_output: &str,
     user_prompt: &str,
     iteration: i64,
     max_iterations: i64,
     controller_events: &mut Vec<ResearchControllerEvent>,
     work_kind: &ResearchWorkItemKind,
+    debt_ids: &[String],
     remaining_model_calls: usize,
 ) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
     match work_kind {
-        ResearchWorkItemKind::PhasePlanBuild
-        | ResearchWorkItemKind::PhasePlanReview
-        | ResearchWorkItemKind::PhaseClaimReadiness => {
+        ResearchWorkItemKind::ArtifactStabilization => {
+            run_artifact_stabilization_work_item(
+                state,
+                task,
+                file_type,
+                normalized_output,
+                user_prompt,
+                controller_events,
+            )
+            .await
+        }
+        ResearchWorkItemKind::SourceCardRepair => {
+            run_source_card_repair_work_item(state, task, debt_ids).await
+        }
+        ResearchWorkItemKind::ClaimLogRepair => {
+            run_claim_log_repair_work_item(state, task, normalized_output, debt_ids).await
+        }
+        ResearchWorkItemKind::PhasePlanBuild => {
             let report = run_phase_state_stage(
                 state,
                 task,
@@ -1127,8 +1177,87 @@ async fn execute_routed_work_item(
                 0,
             )
         }
-        ResearchWorkItemKind::EventCardEnrichment
-        | ResearchWorkItemKind::CausalContinuityReview => {
+        ResearchWorkItemKind::PhasePlanReview => {
+            let report = run_phase_state_stage(
+                state,
+                task,
+                file_prefix,
+                user_prompt,
+                iteration,
+                max_iterations,
+                controller_events,
+            )
+            .await;
+            let artifacts = load_task_research_artifacts(state, task.id)
+                .await
+                .unwrap_or_default();
+            let card_count = artifacts
+                .narrative_state
+                .as_ref()
+                .map(|state| state.event_cards.len())
+                .unwrap_or(0);
+            if card_count > 0 && report.skipped_reason.is_none() {
+                (
+                    ResearchWorkItemStatus::Completed,
+                    format!("phase_plan_reviewed event_cards={card_count}"),
+                    Some("Proceed to phase-specific claim readiness.".to_string()),
+                    0,
+                )
+            } else {
+                (
+                    ResearchWorkItemStatus::Blocked,
+                    format!(
+                        "phase_plan_review_blocked {}",
+                        phase_state_checkpoint_detail(&report)
+                    ),
+                    Some(
+                        "Build a non-placeholder historical phase plan before readiness review."
+                            .to_string(),
+                    ),
+                    0,
+                )
+            }
+        }
+        ResearchWorkItemKind::PhaseClaimReadiness => {
+            let report = run_phase_state_stage(
+                state,
+                task,
+                file_prefix,
+                user_prompt,
+                iteration,
+                max_iterations,
+                controller_events,
+            )
+            .await;
+            let artifacts = load_task_research_artifacts(state, task.id)
+                .await
+                .unwrap_or_default();
+            let total = artifacts
+                .narrative_state
+                .as_ref()
+                .map(|state| state.event_cards.len())
+                .unwrap_or(0);
+            let ready = count_ready_phase_cards(&artifacts);
+            if total > 0 && ready == total {
+                (
+                    ResearchWorkItemStatus::Completed,
+                    format!("phase_claim_readiness ready={ready} total={total}"),
+                    Some("Proceed to event-card enrichment.".to_string()),
+                    0,
+                )
+            } else {
+                (
+                    ResearchWorkItemStatus::Blocked,
+                    format!(
+                        "phase_claim_readiness_blocked ready={ready} total={total} {}",
+                        phase_state_checkpoint_detail(&report)
+                    ),
+                    Some("Provide or repair phase-specific supported Claim Log rows before event-card enrichment.".to_string()),
+                    0,
+                )
+            }
+        }
+        ResearchWorkItemKind::EventCardEnrichment => {
             let report = run_narrative_enrichment_stage(
                 state,
                 task,
@@ -1153,12 +1282,354 @@ async fn execute_routed_work_item(
                 report.selected_cards as i64,
             )
         }
-        _ => (
-            ResearchWorkItemStatus::Failed,
-            "unsupported_queue_route".to_string(),
-            Some("Unsupported work item kind requires a dedicated routed stage.".to_string()),
+        ResearchWorkItemKind::CausalContinuityReview => {
+            run_causal_continuity_review_work_item(state, task.id).await
+        }
+        ResearchWorkItemKind::FinalAnswerRender => {
+            run_final_answer_render_work_item(
+                state,
+                task.id,
+                normalized_output,
+                file_prefix,
+                file_type,
+            )
+            .await
+        }
+        ResearchWorkItemKind::ResearchAcceptanceReview => {
+            run_research_acceptance_review_work_item(
+                state,
+                task.id,
+                normalized_output,
+                file_prefix,
+                file_type,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_artifact_stabilization_work_item(
+    state: &AppState,
+    task: &TaskInfo,
+    file_type: &str,
+    normalized_output: &str,
+    user_prompt: &str,
+    controller_events: &[ResearchControllerEvent],
+) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
+    let before = load_task_research_artifacts(state, task.id)
+        .await
+        .unwrap_or_default();
+    let before_signature = research_artifact_progress_signature(&before);
+    persist_iteration_research_artifacts(
+        state,
+        task.id,
+        controller_events,
+        file_type,
+        normalized_output,
+        task_uses_local_pi(task),
+        task.research_intensity.as_deref(),
+        task.quality_depth.as_deref(),
+        task.research_topic.as_deref(),
+        task.research_instructions.as_deref(),
+        Some(research_source_subject_for_task(task, user_prompt)),
+    )
+    .await;
+    let after = load_task_research_artifacts(state, task.id)
+        .await
+        .unwrap_or_default();
+    let after_signature = research_artifact_progress_signature(&after);
+    let stabilized = after_signature != before_signature
+        || !after.source_cards.is_empty()
+        || !after.claim_log.is_empty()
+        || after.narrative_state.is_some();
+    if stabilized {
+        (
+            ResearchWorkItemStatus::Completed,
+            format!(
+                "artifact_stabilized source_cards={} claim_log={} event_cards={} warnings={}",
+                after.source_cards.len(),
+                after.claim_log.len(),
+                after
+                    .narrative_state
+                    .as_ref()
+                    .map(|state| state.event_cards.len())
+                    .unwrap_or(0),
+                after.warnings.len()
+            ),
+            Some("Continue with source, claim, phase, and narrative repair routes.".to_string()),
+            0,
+        )
+    } else {
+        (
+            ResearchWorkItemStatus::Blocked,
+            "artifact_stabilization_blocked no safe compact artifact state could be recovered".to_string(),
+            Some("Provide a valid machine-readable research artifact JSON block or stronger public source evidence.".to_string()),
+            0,
+        )
+    }
+}
+
+async fn run_source_card_repair_work_item(
+    state: &AppState,
+    task: &TaskInfo,
+    debt_ids: &[String],
+) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
+    let mut artifacts = load_task_research_artifacts(state, task.id)
+        .await
+        .unwrap_or_default();
+    if !artifacts.source_cards.is_empty() && debt_ids.is_empty() {
+        return (
+            ResearchWorkItemStatus::Completed,
+            format!(
+                "source_card_repair_not_needed source_cards={}",
+                artifacts.source_cards.len()
+            ),
+            Some("Proceed to Claim Log readiness.".to_string()),
+            0,
+        );
+    }
+    if !artifacts.source_cards.is_empty() && !debt_ids.is_empty() {
+        return (
+            ResearchWorkItemStatus::Blocked,
+            format!(
+                "source_card_repair_blocked existing Source Cards remain insufficient for queued debt debt={}",
+                debt_ids.len()
+            ),
+            Some("Repair or add public Source Cards that satisfy the queued evidence debt before event-card enrichment.".to_string()),
+            0,
+        );
+    }
+    let diagnostics = load_research_source_diagnostics(state, task.id).await;
+    if let Some(source_cards) = local_pi_source_pack_scaffold_cards_for_iteration(
+        &artifacts,
+        None,
+        None,
+        diagnostics.as_ref(),
+        task_uses_local_pi(task),
+    ) {
+        artifacts.source_cards = source_cards;
+        push_unique_warning(
+            &mut artifacts.warnings,
+            PI_LOCAL_SOURCE_PACK_SOURCE_CARD_SCAFFOLD_WARNING.to_string(),
+        );
+        artifacts.version = RESEARCH_CONTROLLER_ARTIFACT_VERSION;
+        persist_research_controller_artifacts(state, task.id, &artifacts).await;
+        return (
+            ResearchWorkItemStatus::Completed,
+            format!(
+                "source_card_repair_scaffolded source_cards={}",
+                artifacts.source_cards.len()
+            ),
+            Some("Repair supported Claim Log rows from visible evidence next.".to_string()),
+            0,
+        );
+    }
+    upsert_research_debt(
+        &mut artifacts.research_debt,
+        ResearchDebtItem {
+            id: "source-card-repair-blocked".to_string(),
+            severity: "high".to_string(),
+            failed_gate: Some("narrative_enrichment_readiness".to_string()),
+            missing_evidence: "Source Cards are required before bounded event-card enrichment, but no safe deterministic source-card repair path was available.".to_string(),
+            required_source_class: Some("public evidence Source Card".to_string()),
+            candidate_queries: Vec::new(),
+            next_check_actions: vec![
+                "Provide public Source Cards or allow source acquisition to gather public evidence before event-card enrichment.".to_string(),
+            ],
+            status: "open".to_string(),
+        },
+    );
+    persist_research_controller_artifacts(state, task.id, &artifacts).await;
+    (
+        ResearchWorkItemStatus::Blocked,
+        "source_card_repair_blocked no deterministic public Source Card repair available"
+            .to_string(),
+        Some(
+            "Provide public Source Cards or rerun source acquisition before event-card enrichment."
+                .to_string(),
+        ),
+        0,
+    )
+}
+
+async fn run_claim_log_repair_work_item(
+    state: &AppState,
+    task: &TaskInfo,
+    normalized_output: &str,
+    debt_ids: &[String],
+) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
+    let mut artifacts = load_task_research_artifacts(state, task.id)
+        .await
+        .unwrap_or_default();
+    if !artifacts.claim_log.is_empty() && debt_ids.is_empty() {
+        return (
+            ResearchWorkItemStatus::Completed,
+            format!(
+                "claim_log_repair_not_needed claim_log={}",
+                artifacts.claim_log.len()
+            ),
+            Some("Proceed to phase claim readiness.".to_string()),
+            0,
+        );
+    }
+    if !artifacts.claim_log.is_empty() && !debt_ids.is_empty() {
+        return (
+            ResearchWorkItemStatus::Blocked,
+            format!(
+                "claim_log_repair_blocked existing Claim Log rows remain insufficient for queued debt debt={}",
+                debt_ids.len()
+            ),
+            Some("Repair or add phase-specific Claim Log rows supported by public Source Cards before event-card enrichment.".to_string()),
+            0,
+        );
+    }
+    let scaffold_authorized = has_local_pi_source_pack_source_card_scaffold(&artifacts);
+    if let Some(claim_log) = local_pi_repaired_claim_log_for_iteration(
+        &artifacts,
+        true,
+        scaffold_authorized,
+        normalized_output,
+        &artifacts.source_cards,
+        task_uses_local_pi(task),
+    ) {
+        artifacts.claim_log = claim_log;
+        push_unique_warning(
+            &mut artifacts.warnings,
+            PI_LOCAL_SOURCE_PACK_CLAIM_LOG_REPAIR_WARNING.to_string(),
+        );
+        artifacts.version = RESEARCH_CONTROLLER_ARTIFACT_VERSION;
+        persist_research_controller_artifacts(state, task.id, &artifacts).await;
+        return (
+            ResearchWorkItemStatus::Completed,
+            format!("claim_log_repaired claim_log={}", artifacts.claim_log.len()),
+            Some("Proceed to phase-specific claim readiness.".to_string()),
+            0,
+        );
+    }
+    upsert_research_debt(
+        &mut artifacts.research_debt,
+        ResearchDebtItem {
+            id: "claim-log-repair-blocked".to_string(),
+            severity: "high".to_string(),
+            failed_gate: Some("narrative_enrichment_readiness".to_string()),
+            missing_evidence: "Supported Claim Log rows are required before bounded event-card enrichment, but no safe deterministic Claim Log repair path was available.".to_string(),
+            required_source_class: Some("supported Claim Log row".to_string()),
+            candidate_queries: Vec::new(),
+            next_check_actions: vec![
+                "Provide phase-specific Claim Log rows supported by public Source Cards or full public URLs.".to_string(),
+            ],
+            status: "open".to_string(),
+        },
+    );
+    persist_research_controller_artifacts(state, task.id, &artifacts).await;
+    (
+        ResearchWorkItemStatus::Blocked,
+        "claim_log_repair_blocked no deterministic supported Claim Log repair available".to_string(),
+        Some("Provide phase-specific Claim Log rows supported by public Source Cards or full public URLs.".to_string()),
+        0,
+    )
+}
+
+async fn run_causal_continuity_review_work_item(
+    state: &AppState,
+    task_id: i64,
+) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
+    let artifacts = load_task_research_artifacts(state, task_id)
+        .await
+        .unwrap_or_default();
+    if has_grounded_causal_depth(&artifacts) {
+        (
+            ResearchWorkItemStatus::Completed,
+            "causal_continuity_review_passed grounded causal or interpretive depth is present"
+                .to_string(),
+            Some("Proceed to final-answer rendering.".to_string()),
+            0,
+        )
+    } else {
+        (
+            ResearchWorkItemStatus::Blocked,
+            "causal_continuity_review_blocked no grounded causal_spine or interpretive_layers present".to_string(),
+            Some("Run event-card enrichment or provide supported phase-specific causal/interpretive Claim Log evidence.".to_string()),
+            0,
+        )
+    }
+}
+
+async fn run_final_answer_render_work_item(
+    state: &AppState,
+    task_id: i64,
+    normalized_output: &str,
+    file_prefix: &str,
+    file_type: &str,
+) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
+    let artifacts = load_task_research_artifacts(state, task_id)
+        .await
+        .unwrap_or_default();
+    if artifacts.source_cards.is_empty()
+        || (artifacts.claim_log.is_empty()
+            && !has_local_pi_source_pack_source_card_scaffold(&artifacts))
+    {
+        return (
+            ResearchWorkItemStatus::Blocked,
+            "final_answer_render_blocked missing Source Cards or supported Claim Log".to_string(),
+            Some(
+                "Repair Source Cards and supported Claim Log rows before final-answer rendering."
+                    .to_string(),
+            ),
+            0,
+        );
+    }
+    let rendered =
+        finalize_task_research_output(state, task_id, normalized_output, file_prefix, file_type)
+            .await;
+    if rendered.trim().is_empty() {
+        (
+            ResearchWorkItemStatus::Blocked,
+            "final_answer_render_blocked empty rendered output".to_string(),
+            Some("Repair artifacts before final-answer rendering.".to_string()),
+            0,
+        )
+    } else {
+        (
+            ResearchWorkItemStatus::Completed,
+            format!("final_answer_rendered chars={}", rendered.chars().count()),
+            Some("Run research acceptance review.".to_string()),
+            0,
+        )
+    }
+}
+
+async fn run_research_acceptance_review_work_item(
+    state: &AppState,
+    task_id: i64,
+    normalized_output: &str,
+    file_prefix: &str,
+    file_type: &str,
+) -> (ResearchWorkItemStatus, String, Option<String>, i64) {
+    let rendered =
+        finalize_task_research_output(state, task_id, normalized_output, file_prefix, file_type)
+            .await;
+    match validate_task_research_output(state, task_id, &rendered, file_prefix, file_type, None)
+        .await
+    {
+        Ok(_) => (
+            ResearchWorkItemStatus::Completed,
+            "research_acceptance_review_passed".to_string(),
+            Some("Research quality gate can accept the current trusted state.".to_string()),
             0,
         ),
+        Err(failure) => {
+            let safe_message = compact_detail(&failure.message);
+            (
+                ResearchWorkItemStatus::Blocked,
+                format!("research_acceptance_review_blocked {safe_message}"),
+                Some(
+                    "Repair the remaining quality-gate failures before accepting this research run."
+                        .to_string(),
+                ),
+                0,
+            )
+        }
     }
 }
 
@@ -1473,7 +1944,56 @@ fn collect_phase_source_card_ids(artifacts: &ResearchControllerArtifacts) -> Vec
     unique_safe_ids(ids)
 }
 
+#[derive(Debug, Default)]
+struct QueueGroundingIndex {
+    public_source_ids: HashSet<String>,
+    supported_claim_ids: HashSet<String>,
+}
+
+fn queue_grounding_index(artifacts: &ResearchControllerArtifacts) -> QueueGroundingIndex {
+    let public_source_ids = artifacts
+        .source_cards
+        .iter()
+        .filter(|source| normalize_public_evidence_url(&source.url).is_some())
+        .map(|source| source.id.clone())
+        .collect::<HashSet<_>>();
+    let supported_claim_ids = artifacts
+        .claim_log
+        .iter()
+        .filter(|claim| claim.needs_verification != Some(true))
+        .filter(|claim| {
+            claim
+                .support_source_card_ids
+                .iter()
+                .any(|source_id| public_source_ids.contains(source_id))
+                || claim
+                    .support_urls
+                    .iter()
+                    .any(|url| normalize_public_evidence_url(url).is_some())
+        })
+        .map(|claim| claim.id.clone())
+        .collect::<HashSet<_>>();
+    QueueGroundingIndex {
+        public_source_ids,
+        supported_claim_ids,
+    }
+}
+
+fn all_ids_resolve(ids: &[String], valid_ids: &HashSet<String>) -> bool {
+    !ids.is_empty() && ids.iter().all(|id| valid_ids.contains(id))
+}
+
+fn optional_ids_resolve(ids: &[String], valid_ids: &HashSet<String>) -> bool {
+    ids.is_empty() || ids.iter().all(|id| valid_ids.contains(id))
+}
+
+fn phase_card_has_grounded_refs(card: &NarrativeEventCard, index: &QueueGroundingIndex) -> bool {
+    all_ids_resolve(&card.claim_log_ids, &index.supported_claim_ids)
+        && all_ids_resolve(&card.source_ids, &index.public_source_ids)
+}
+
 fn count_ready_phase_cards(artifacts: &ResearchControllerArtifacts) -> usize {
+    let index = queue_grounding_index(artifacts);
     artifacts
         .narrative_state
         .as_ref()
@@ -1481,19 +2001,49 @@ fn count_ready_phase_cards(artifacts: &ResearchControllerArtifacts) -> usize {
             state
                 .event_cards
                 .iter()
-                .filter(|card| !card.claim_log_ids.is_empty() && !card.source_ids.is_empty())
+                .filter(|card| phase_card_has_grounded_refs(card, &index))
                 .count()
         })
         .unwrap_or(0)
 }
 
+fn causal_link_is_grounded(link: &NarrativeCausalLink, index: &QueueGroundingIndex) -> bool {
+    all_ids_resolve(&link.expected_claim_log_ids, &index.supported_claim_ids)
+        && all_ids_resolve(&link.expected_source_card_ids, &index.public_source_ids)
+}
+
+fn causal_spine_step_is_grounded(
+    step: &NarrativeCausalSpineStep,
+    index: &QueueGroundingIndex,
+) -> bool {
+    all_ids_resolve(&step.claim_log_ids, &index.supported_claim_ids)
+        && optional_ids_resolve(&step.source_ids, &index.public_source_ids)
+}
+
+fn interpretive_layer_is_grounded(
+    layer: &NarrativeInterpretiveLayer,
+    index: &QueueGroundingIndex,
+) -> bool {
+    all_ids_resolve(&layer.claim_log_ids, &index.supported_claim_ids)
+        && optional_ids_resolve(&layer.source_ids, &index.public_source_ids)
+}
+
 fn has_grounded_causal_depth(artifacts: &ResearchControllerArtifacts) -> bool {
+    let index = queue_grounding_index(artifacts);
     artifacts.narrative_state.as_ref().is_some_and(|state| {
-        !state.causal_chain.is_empty()
-            || state
-                .event_cards
-                .iter()
-                .any(|card| !card.causal_spine.is_empty() || !card.interpretive_layers.is_empty())
+        state
+            .causal_chain
+            .iter()
+            .any(|link| causal_link_is_grounded(link, &index))
+            || state.event_cards.iter().any(|card| {
+                card.causal_spine
+                    .iter()
+                    .any(|step| causal_spine_step_is_grounded(step, &index))
+                    || card
+                        .interpretive_layers
+                        .iter()
+                        .any(|layer| interpretive_layer_is_grounded(layer, &index))
+            })
     })
 }
 
@@ -1897,8 +2447,8 @@ mod tests {
     use crate::test_support::{temp_test_dir, test_state};
     use futures::future::BoxFuture;
     use liquid_protocol::{
-        NarrativeEventCard, NarrativeSectionOutlineItem, NarrativeState, ResearchClaimLogEntry,
-        ResearchControllerArtifacts, ResearchDebtItem, ResearchSourceCard,
+        NarrativeCausalSpineStep, NarrativeEventCard, NarrativeSectionOutlineItem, NarrativeState,
+        ResearchClaimLogEntry, ResearchControllerArtifacts, ResearchDebtItem, ResearchSourceCard,
     };
     use liquid_storage_sqlite::setup_db;
 
@@ -1932,6 +2482,323 @@ mod tests {
             confidence: Some("medium".to_string()),
             ..ResearchClaimLogEntry::default()
         }
+    }
+
+    fn all_work_item_kinds() -> Vec<ResearchWorkItemKind> {
+        vec![
+            ResearchWorkItemKind::ArtifactStabilization,
+            ResearchWorkItemKind::SourceCardRepair,
+            ResearchWorkItemKind::ClaimLogRepair,
+            ResearchWorkItemKind::PhasePlanBuild,
+            ResearchWorkItemKind::PhasePlanReview,
+            ResearchWorkItemKind::PhaseClaimReadiness,
+            ResearchWorkItemKind::EventCardEnrichment,
+            ResearchWorkItemKind::CausalContinuityReview,
+            ResearchWorkItemKind::FinalAnswerRender,
+            ResearchWorkItemKind::ResearchAcceptanceReview,
+        ]
+    }
+
+    fn compact_artifact_output() -> String {
+        serde_json::json!({
+            "version": 1,
+            "source_cards": [{
+                "id": "S1",
+                "url": "https://example.org/s1",
+                "title": "Source S1",
+                "source_class": "authoritative_secondary",
+                "extracted_facts": ["1792-1793 republican transition in Paris abolished the monarchy and declared the republic."]
+            }],
+            "claim_log": [{
+                "id": "C1",
+                "claim": "1792-1793 republican transition in Paris abolished the monarchy and declared the republic.",
+                "support_source_card_ids": ["S1"],
+                "confidence": "medium"
+            }],
+            "conflict_map": [],
+            "research_debt": [],
+            "narrative_state": {
+                "version": 1,
+                "section_outline": [{
+                    "id": "SO1",
+                    "heading": "Republican transition",
+                    "purpose": "1792-1793 monarchy collapse and republic declaration in Paris",
+                    "expected_claim_log_ids": ["C1"],
+                    "expected_source_card_ids": ["S1"]
+                }],
+                "event_cards": [{
+                    "label": "Republican transition",
+                    "timeframe": "1792-1793",
+                    "actors": ["Paris revolutionaries", "National Convention"],
+                    "region_or_front": "Paris",
+                    "trigger": "monarchy collapse",
+                    "development": "The political center shifted from monarchy to republic.",
+                    "outcome": "The republic was declared.",
+                    "claim_log_ids": ["C1"],
+                    "source_ids": ["S1"]
+                }]
+            }
+        })
+        .to_string()
+    }
+
+    fn artifact_markdown_output() -> String {
+        format!(
+            "## 최종 답변\n\nFrench Revolution republican transition.\n\n[RESEARCH_ARTIFACT_JSON]\n```json\n{}\n```",
+            compact_artifact_output()
+        )
+    }
+
+    #[test]
+    fn every_work_item_kind_has_a_routed_stage() {
+        for kind in all_work_item_kinds() {
+            assert!(
+                routed_stage_for_kind(&kind).is_some(),
+                "{kind:?} must have a controller stage"
+            );
+        }
+    }
+
+    #[test]
+    fn routed_work_item_drafts_have_attempt_budgets_when_runnable() {
+        let task = TaskInfo {
+            id: 1,
+            original_name: "Historical queue".to_string(),
+            status: "researching".to_string(),
+            file_prefix: Some("[AI-Research]".to_string()),
+            file_type: Some("md".to_string()),
+            research_topic: Some("French Revolution republican transition".to_string()),
+            research_intensity: Some("high".to_string()),
+            quality_depth: Some("strict".to_string()),
+            ..sample_task()
+        };
+        let artifacts = ResearchControllerArtifacts {
+            research_debt: vec![
+                ResearchDebtItem {
+                    id: "artifact".to_string(),
+                    failed_gate: Some("artifact_quality".to_string()),
+                    status: "open".to_string(),
+                    ..ResearchDebtItem::default()
+                },
+                ResearchDebtItem {
+                    id: "gate".to_string(),
+                    failed_gate: Some("quality_gate".to_string()),
+                    status: "open".to_string(),
+                    ..ResearchDebtItem::default()
+                },
+            ],
+            ..ResearchControllerArtifacts::default()
+        };
+
+        let iteration_state = refresh_research_iteration_state(
+            &task,
+            "[AI-Research]",
+            "French Revolution republican transition",
+            &artifacts,
+        );
+
+        let runnable = iteration_state
+            .work_items
+            .iter()
+            .filter(|item| item.status == ResearchWorkItemStatus::Pending)
+            .collect::<Vec<_>>();
+        assert!(!runnable.is_empty());
+        assert!(runnable.iter().all(|item| item.max_attempts > 0));
+        assert!(runnable
+            .iter()
+            .any(|item| item.kind == ResearchWorkItemKind::ArtifactStabilization));
+        assert!(runnable
+            .iter()
+            .any(|item| item.kind == ResearchWorkItemKind::SourceCardRepair));
+        assert!(runnable
+            .iter()
+            .any(|item| item.kind == ResearchWorkItemKind::ClaimLogRepair));
+    }
+
+    #[test]
+    fn source_and_claim_repair_debt_routes_even_when_ledgers_are_non_empty() {
+        let task = TaskInfo {
+            id: 1,
+            original_name: "Historical queue".to_string(),
+            status: "researching".to_string(),
+            file_prefix: Some("[AI-Research]".to_string()),
+            file_type: Some("md".to_string()),
+            research_topic: Some("French Revolution republican transition".to_string()),
+            research_intensity: Some("high".to_string()),
+            quality_depth: Some("strict".to_string()),
+            ..sample_task()
+        };
+        let artifacts = ResearchControllerArtifacts {
+            source_cards: vec![source(
+                "S1",
+                "1792-1793 republican transition in Paris abolished the monarchy.",
+            )],
+            claim_log: vec![claim(
+                "C1",
+                "1792-1793 republican transition in Paris abolished the monarchy.",
+                "S1",
+            )],
+            research_debt: vec![
+                ResearchDebtItem {
+                    id: "source-gap".to_string(),
+                    failed_gate: Some("narrative_enrichment_readiness".to_string()),
+                    missing_evidence: "source card coverage remains insufficient".to_string(),
+                    next_check_actions: vec!["Repair Source Cards.".to_string()],
+                    status: "open".to_string(),
+                    ..ResearchDebtItem::default()
+                },
+                ResearchDebtItem {
+                    id: "claim-gap".to_string(),
+                    failed_gate: Some("narrative_enrichment_readiness".to_string()),
+                    missing_evidence: "claim log coverage remains insufficient".to_string(),
+                    next_check_actions: vec!["Repair Claim Log rows.".to_string()],
+                    status: "open".to_string(),
+                    ..ResearchDebtItem::default()
+                },
+            ],
+            ..ResearchControllerArtifacts::default()
+        };
+
+        let iteration_state = refresh_research_iteration_state(
+            &task,
+            "[AI-Research]",
+            "French Revolution republican transition",
+            &artifacts,
+        );
+        let source_item = iteration_state
+            .work_items
+            .iter()
+            .find(|item| item.kind == ResearchWorkItemKind::SourceCardRepair)
+            .expect("source repair debt should route even with existing source cards");
+        let claim_item = iteration_state
+            .work_items
+            .iter()
+            .find(|item| item.kind == ResearchWorkItemKind::ClaimLogRepair)
+            .expect("claim repair debt should route even with existing claim rows");
+
+        assert_eq!(source_item.status, ResearchWorkItemStatus::Pending);
+        assert_eq!(claim_item.status, ResearchWorkItemStatus::Pending);
+        assert_eq!(source_item.debt_ids, vec!["source-gap".to_string()]);
+        assert_eq!(claim_item.debt_ids, vec!["claim-gap".to_string()]);
+    }
+
+    #[test]
+    fn phase_and_causal_readiness_require_resolved_supported_refs() {
+        let mut artifacts = ResearchControllerArtifacts {
+            source_cards: vec![source(
+                "S1",
+                "1792-1793 republican transition in Paris abolished the monarchy and declared the republic.",
+            )],
+            claim_log: vec![claim(
+                "C1",
+                "1792-1793 republican transition in Paris abolished the monarchy and declared the republic.",
+                "S1",
+            )],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![NarrativeEventCard {
+                    label: "Republican transition".to_string(),
+                    timeframe: Some("1792-1793".to_string()),
+                    actors: vec!["Paris revolutionaries".to_string()],
+                    region_or_front: Some("Paris".to_string()),
+                    trigger: Some("monarchy collapse".to_string()),
+                    development: Some("The political center shifted from monarchy to republic.".to_string()),
+                    outcome: Some("The republic was declared.".to_string()),
+                    claim_log_ids: vec!["C999".to_string()],
+                    source_ids: vec!["S999".to_string()],
+                    causal_spine: vec![NarrativeCausalSpineStep {
+                        step_type: "forcing_factor".to_string(),
+                        description: "Unsupported causal prose should not count.".to_string(),
+                        epistemic_status: Some("interpretation".to_string()),
+                        claim_log_ids: vec!["C999".to_string()],
+                        source_ids: vec!["S999".to_string()],
+                        ..NarrativeCausalSpineStep::default()
+                    }],
+                    ..NarrativeEventCard::default()
+                }],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+
+        assert_eq!(count_ready_phase_cards(&artifacts), 0);
+        assert!(!has_grounded_causal_depth(&artifacts));
+
+        let state = artifacts.narrative_state.as_mut().unwrap();
+        let card = state.event_cards.first_mut().unwrap();
+        card.claim_log_ids = vec!["C1".to_string()];
+        card.source_ids = vec!["S1".to_string()];
+        card.causal_spine[0].claim_log_ids = vec!["C1".to_string()];
+        card.causal_spine[0].source_ids = vec!["S1".to_string()];
+
+        assert_eq!(count_ready_phase_cards(&artifacts), 1);
+        assert!(has_grounded_causal_depth(&artifacts));
+    }
+
+    #[test]
+    fn completed_work_item_with_same_input_is_not_rescheduled() {
+        let artifacts = ResearchControllerArtifacts {
+            research_debt: vec![ResearchDebtItem {
+                id: "quality".to_string(),
+                failed_gate: Some("quality_gate".to_string()),
+                status: "open".to_string(),
+                ..ResearchDebtItem::default()
+            }],
+            ..ResearchControllerArtifacts::default()
+        };
+        let draft = WorkItemDraft {
+            id: FINAL_ANSWER_RENDER_WORK_ITEM_ID,
+            kind: ResearchWorkItemKind::FinalAnswerRender,
+            target: "final_answer",
+            blocking: true,
+            applicable: true,
+            needs_attention: true,
+            needs_run: true,
+            max_attempts: 2,
+            debt_ids: vec!["quality".to_string()],
+            dependencies: Vec::new(),
+            phase_ids: Vec::new(),
+            claim_log_ids: Vec::new(),
+            source_card_ids: Vec::new(),
+            created_from: vec!["research_debt:quality".to_string()],
+            next_action: Some("Render final answer.".to_string()),
+            detail: "quality debt still open".to_string(),
+        };
+        let fingerprint = work_item_fingerprint(
+            &draft.kind,
+            &artifacts,
+            &draft.phase_ids,
+            &draft.claim_log_ids,
+            &draft.source_card_ids,
+            &draft.debt_ids,
+        );
+        let previous = ResearchWorkItem {
+            id: FINAL_ANSWER_RENDER_WORK_ITEM_ID.to_string(),
+            kind: ResearchWorkItemKind::FinalAnswerRender,
+            status: ResearchWorkItemStatus::Completed,
+            target: Some("final_answer".to_string()),
+            blocking: true,
+            debt_ids: vec!["quality".to_string()],
+            dependencies: Vec::new(),
+            phase_ids: Vec::new(),
+            claim_log_ids: Vec::new(),
+            source_card_ids: Vec::new(),
+            created_from: vec!["research_debt:quality".to_string()],
+            max_attempts: 2,
+            attempt_count: 1,
+            last_wave: Some(1),
+            last_error: None,
+            next_action: None,
+            input_fingerprint: Some(fingerprint),
+            output_fingerprint: None,
+            detail: Some("completed".to_string()),
+        };
+
+        let item = realize_work_item(draft, Some(&previous), &artifacts, false);
+
+        assert_eq!(item.status, ResearchWorkItemStatus::Completed);
+        assert_eq!(item.attempt_count, 1);
+        assert!(item.last_error.is_none());
     }
 
     #[test]
@@ -2400,6 +3267,10 @@ mod tests {
             "fake-model",
             "cli",
             "[AI-Research]",
+            "md",
+            "## 최종 답변
+French Revolution republican transition.
+",
             "French Revolution republican transition",
             1,
             1,
@@ -2435,6 +3306,172 @@ mod tests {
             persisted_state.checkpoints.len(),
             iteration_state.checkpoints.len()
         );
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn artifact_stabilization_route_persists_safe_ledgers() {
+        let dir = temp_test_dir("research-work-queue-artifact-stabilization-route");
+        let db = setup_db(&dir).await.unwrap();
+        let state = test_state(db.clone(), dir.join("uploads"));
+        let task_id = sqlx::query(
+            "INSERT INTO tasks (original_name, status, file_prefix, file_type, research_topic, research_intensity, quality_depth) VALUES ('Historical queue', 'researching', '[AI-Research]', 'md', 'French Revolution republican transition', 'high', 'strict')",
+        )
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        let task = sqlx::query_as::<_, TaskInfo>("SELECT * FROM tasks WHERE id = ?")
+            .bind(task_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        persist_research_controller_artifacts(
+            &state,
+            task_id,
+            &ResearchControllerArtifacts {
+                research_debt: vec![ResearchDebtItem {
+                    id: "artifact".to_string(),
+                    failed_gate: Some("artifact_quality".to_string()),
+                    status: "open".to_string(),
+                    ..ResearchDebtItem::default()
+                }],
+                ..ResearchControllerArtifacts::default()
+            },
+        )
+        .await;
+
+        let (status, detail, next_action, calls) = run_artifact_stabilization_work_item(
+            &state,
+            &task,
+            "md",
+            &artifact_markdown_output(),
+            "French Revolution republican transition",
+            &[],
+        )
+        .await;
+
+        assert_eq!(status, ResearchWorkItemStatus::Completed);
+        assert!(detail.contains("source_cards=1"));
+        assert!(next_action.is_some());
+        assert_eq!(calls, 0);
+        let persisted = load_task_research_artifacts(&state, task_id)
+            .await
+            .expect("artifacts should persist");
+        assert_eq!(persisted.source_cards.len(), 1);
+        assert_eq!(persisted.claim_log.len(), 1);
+        assert!(persisted.narrative_state.is_some());
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn deterministic_repair_routes_block_or_complete_without_unsupported_failure() {
+        let dir = temp_test_dir("research-work-queue-deterministic-routes");
+        let db = setup_db(&dir).await.unwrap();
+        let state = test_state(db.clone(), dir.join("uploads"));
+        let task_id = sqlx::query(
+            "INSERT INTO tasks (original_name, status, file_prefix, file_type, research_topic, research_intensity, quality_depth) VALUES ('Historical queue', 'researching', '[AI-Research]', 'md', 'French Revolution republican transition', 'high', 'strict')",
+        )
+        .execute(&db)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        let task = sqlx::query_as::<_, TaskInfo>("SELECT * FROM tasks WHERE id = ?")
+            .bind(task_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+        let (source_status, source_detail, source_next, _) =
+            run_source_card_repair_work_item(&state, &task, &[]).await;
+        assert_eq!(source_status, ResearchWorkItemStatus::Blocked);
+        assert!(!source_detail.contains("unsupported_queue_route"));
+        assert!(source_next
+            .as_deref()
+            .is_some_and(|next| next.contains("Provide public Source Cards")));
+
+        let mut artifacts = ResearchControllerArtifacts {
+            source_cards: vec![source(
+                "S1",
+                "1792-1793 republican transition in Paris abolished the monarchy and declared the republic.",
+            )],
+            claim_log: vec![claim(
+                "C1",
+                "1792-1793 republican transition in Paris abolished the monarchy and declared the republic.",
+                "S1",
+            )],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![NarrativeEventCard {
+                    label: "Republican transition".to_string(),
+                    timeframe: Some("1792-1793".to_string()),
+                    actors: vec!["Paris revolutionaries".to_string()],
+                    region_or_front: Some("Paris".to_string()),
+                    trigger: Some("monarchy collapse".to_string()),
+                    development: Some("The political center shifted from monarchy to republic.".to_string()),
+                    outcome: Some("The republic was declared.".to_string()),
+                    claim_log_ids: vec!["C1".to_string()],
+                    source_ids: vec!["S1".to_string()],
+                    causal_spine: vec![NarrativeCausalSpineStep {
+                        step_type: "forcing_factor".to_string(),
+                        description: "Monarchy collapse forced republican institutional change.".to_string(),
+                        epistemic_status: Some("interpretation".to_string()),
+                        reasoning: Some("The supported claim ties the transition to the republic declaration.".to_string()),
+                        claim_log_ids: vec!["C1".to_string()],
+                        source_ids: vec!["S1".to_string()],
+                        ..NarrativeCausalSpineStep::default()
+                    }],
+                    ..NarrativeEventCard::default()
+                }],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+        persist_research_controller_artifacts(&state, task_id, &artifacts).await;
+
+        let (claim_status, claim_detail, _, _) =
+            run_claim_log_repair_work_item(&state, &task, &artifact_markdown_output(), &[]).await;
+        assert_eq!(claim_status, ResearchWorkItemStatus::Completed);
+        assert!(!claim_detail.contains("unsupported_queue_route"));
+
+        let (causal_status, causal_detail, _, _) =
+            run_causal_continuity_review_work_item(&state, task_id).await;
+        assert_eq!(causal_status, ResearchWorkItemStatus::Completed);
+        assert!(!causal_detail.contains("unsupported_queue_route"));
+
+        let (render_status, render_detail, _, _) = run_final_answer_render_work_item(
+            &state,
+            task_id,
+            "## 최종 답변\nFrench Revolution republican transition.",
+            "[AI-Research]",
+            "md",
+        )
+        .await;
+        assert_eq!(render_status, ResearchWorkItemStatus::Completed);
+        assert!(!render_detail.contains("unsupported_queue_route"));
+
+        artifacts = load_task_research_artifacts(&state, task_id)
+            .await
+            .expect("artifacts should persist after render");
+        assert!(!artifacts.warnings.iter().any(|warning| {
+            warning.contains("provider_payload") || warning.contains("resolved_prompt")
+        }));
+
+        let (acceptance_status, acceptance_detail, _, _) =
+            run_research_acceptance_review_work_item(
+                &state,
+                task_id,
+                "## 최종 답변\nFrench Revolution republican transition.",
+                "[AI-Research]",
+                "md",
+            )
+            .await;
+        assert_ne!(acceptance_status, ResearchWorkItemStatus::Failed);
+        assert!(!acceptance_detail.contains("unsupported_queue_route"));
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
