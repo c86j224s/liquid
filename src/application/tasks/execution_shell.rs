@@ -119,6 +119,20 @@ pub(super) async fn execute_ai_task_with_quality_loop(
     let mut pending_repair_hint_urls = HashSet::new();
     let mut controller_events = Vec::new();
 
+    if try_run_historical_phase_engine(
+        state,
+        &task,
+        &filenames,
+        cleanup_files.clone(),
+        file_prefix,
+        file_type,
+        user_prompt,
+    )
+    .await
+    {
+        return;
+    }
+
     for iteration in 1..=max_iterations {
         update_research_controller_progress(
             state,

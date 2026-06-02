@@ -57,5 +57,6 @@ pub(crate) struct AppState {
     pub(crate) cli_launch_mode: CliLaunchMode,
     pub(crate) research_implementation_id: &'static str,
     pub(crate) research_implementation: Arc<dyn ResearchImplementation>,
+    pub(crate) research_historical_phase_engine: bool,
     pub(crate) benchmark_fixture: Option<BenchmarkFixture>,
 }

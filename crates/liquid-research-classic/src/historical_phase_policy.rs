@@ -639,10 +639,8 @@ fn candidate_phases_from_open_gaps(items: &[NarrativeOpenGap]) -> Vec<Historical
 }
 
 fn candidate_phases_from_subject(subject: &str) -> Vec<HistoricalResearchPhase> {
-    if !wwi_prewar_crisis_subject(subject) {
-        return Vec::new();
-    }
-    vec![
+    if wwi_prewar_crisis_subject(subject) {
+        return vec![
         phase_from_seed(
             "subject_wwi_morocco_1",
             "제1차 모로코 위기",
@@ -757,22 +755,141 @@ fn candidate_phases_from_subject(subject: &str) -> Vec<HistoricalResearchPhase> 
             Vec::new(),
             Vec::new(),
         ),
-    ]
+    ];
+    }
+    if wwii_prewar_diplomacy_subject(subject) {
+        return vec![
+            phase_from_seed(
+                "subject_wwii_interwar_norms",
+                "전간기 평화규범과 집행 공백",
+                Some("1919-1931년".to_string()),
+                vec!["국제연맹".to_string(), "영국".to_string(), "프랑스".to_string()],
+                Some("유럽·국제연맹".to_string()),
+                Some("베르사유 질서와 국제연맹 규범은 전쟁 억제를 약속했지만 강제력과 합의가 약했다.".to_string()),
+                Some("평화규범은 있었지만 집행 공백이 침략 억지를 약화시킨 국면".to_string()),
+                Some("불완전한 집행 구조가 만주와 유럽의 시험 사례로 이어졌다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_manchuria",
+                "만주사변과 비승인 외교",
+                Some("1931-1933년".to_string()),
+                vec!["일본".to_string(), "중국".to_string(), "국제연맹".to_string(), "미국".to_string()],
+                Some("만주·동아시아".to_string()),
+                Some("일본의 만주 점령과 만주국 수립이 집단안보와 비승인 원칙을 시험했다.".to_string()),
+                Some("만주사변은 국제연맹 제재 한계와 비승인 외교의 약함을 드러낸 국면".to_string()),
+                Some("집단안보의 약점이 이후 이탈리아와 독일의 위험 계산에 영향을 주었다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_german_rearmament",
+                "독일 재무장과 베르사유 질서 해체",
+                Some("1933-1935년".to_string()),
+                vec!["독일".to_string(), "영국".to_string(), "프랑스".to_string()],
+                Some("독일·유럽".to_string()),
+                Some("히틀러 정권의 재무장과 병역 부활이 베르사유 제한을 공개적으로 무너뜨렸다.".to_string()),
+                Some("독일 재무장은 군사 균형과 조약 신뢰를 동시에 흔든 국면".to_string()),
+                Some("제재 없는 대응은 라인란트 행동의 위험을 낮추어 보이게 했다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_ethiopia",
+                "에티오피아 위기와 국제연맹 실패",
+                Some("1935-1936년".to_string()),
+                vec!["이탈리아".to_string(), "에티오피아".to_string(), "국제연맹".to_string(), "영국".to_string(), "프랑스".to_string()],
+                Some("에티오피아·제네바".to_string()),
+                Some("이탈리아의 에티오피아 침공이 국제연맹 제재와 영국·프랑스 타협 외교를 시험했다.".to_string()),
+                Some("에티오피아 위기는 집단안보가 대국 침략을 막지 못한다는 신호를 준 국면".to_string()),
+                Some("독재국 협력과 서방 유화의 비용이 더 커졌다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_rhineland",
+                "라인란트 재무장",
+                Some("1936년".to_string()),
+                vec!["독일".to_string(), "프랑스".to_string(), "영국".to_string()],
+                Some("라인란트·서유럽".to_string()),
+                Some("독일군의 라인란트 진입이 로카르노 체제와 프랑스 안보 계산을 흔들었다.".to_string()),
+                Some("라인란트 재무장은 독일의 위험 감수와 서방의 군사 대응 회피가 맞물린 국면".to_string()),
+                Some("독일은 이후 오스트리아와 체코슬로바키아 문제에서 더 큰 압박을 시도할 수 있었다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_spain",
+                "스페인 내전과 불간섭 실패",
+                Some("1936-1939년".to_string()),
+                vec!["스페인 공화파".to_string(), "프랑코 세력".to_string(), "독일".to_string(), "이탈리아".to_string(), "소련".to_string()],
+                Some("스페인·지중해".to_string()),
+                Some("스페인 내전에서 불간섭 원칙은 독일·이탈리아 지원과 소련 개입 앞에서 약화되었다.".to_string()),
+                Some("스페인 내전은 이념전, 군사 실험, 불간섭 실패가 겹친 국면".to_string()),
+                Some("유럽 외교는 추축 협력과 민주국가의 제한된 대응을 더 뚜렷하게 보게 되었다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_austria_sudeten",
+                "오스트리아 병합과 수데텐 위기",
+                Some("1938년".to_string()),
+                vec!["독일".to_string(), "오스트리아".to_string(), "체코슬로바키아".to_string(), "영국".to_string(), "프랑스".to_string()],
+                Some("오스트리아·수데텐란트".to_string()),
+                Some("오스트리아 병합 뒤 독일은 수데텐 독일인 문제를 내세워 체코슬로바키아를 압박했다.".to_string()),
+                Some("오스트리아 병합과 수데텐 위기는 민족자결 명분과 강압 외교가 결합한 국면".to_string()),
+                Some("위기는 뮌헨 협정에서 유화와 영토 양보의 시험으로 이어졌다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_munich",
+                "뮌헨 협정",
+                Some("1938년 9월".to_string()),
+                vec!["독일".to_string(), "영국".to_string(), "프랑스".to_string(), "체코슬로바키아".to_string()],
+                Some("뮌헨·수데텐란트".to_string()),
+                Some("영국과 프랑스는 전쟁 회피를 위해 수데텐란트 양보를 승인했다.".to_string()),
+                Some("뮌헨 협정은 유화 외교가 일시적 평화를 주었지만 침략 억지 신뢰를 약화한 국면".to_string()),
+                Some("프라하 점령은 뮌헨이 최종 요구가 아니었음을 드러냈다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_prague_poland",
+                "프라하 점령과 폴란드 보장",
+                Some("1939년 3-4월".to_string()),
+                vec!["독일".to_string(), "체코슬로바키아".to_string(), "영국".to_string(), "프랑스".to_string(), "폴란드".to_string()],
+                Some("프라하·폴란드".to_string()),
+                Some("독일의 프라하 점령 뒤 영국과 프랑스는 폴란드 보장으로 유화에서 억지로 전환했다.".to_string()),
+                Some("프라하 점령과 폴란드 보장은 외교의 기준점을 영토 양보에서 전쟁 위험 감수로 바꾼 국면".to_string()),
+                Some("독일은 소련과의 협상 가능성을 활용해 폴란드 침공의 외교 조건을 찾았다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+            phase_from_seed(
+                "subject_wwii_nazi_soviet_pact",
+                "독소불가침조약과 폴란드 침공",
+                Some("1939년 8-9월".to_string()),
+                vec!["독일".to_string(), "소련".to_string(), "폴란드".to_string(), "영국".to_string(), "프랑스".to_string()],
+                Some("모스크바·폴란드".to_string()),
+                Some("독일과 소련의 불가침조약은 폴란드 분할 가능성을 열고 서방 보장의 시험을 만들었다.".to_string()),
+                Some("독소불가침조약과 폴란드 침공은 외교 위기를 전면전으로 바꾼 국면".to_string()),
+                Some("영국과 프랑스의 선전포고로 제2차 세계대전이 시작되었다.".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+        ];
+    }
+    Vec::new()
 }
 
 fn wwi_prewar_crisis_subject(subject: &str) -> bool {
     let lower = subject.to_ascii_lowercase();
     let wwi = contains_any(
         &lower,
-        &[
-            "world war i",
-            "first world war",
-            "wwi",
-            "great war",
-            "prewar",
-            "pre-war",
-        ],
-    ) || contains_any(subject, &["1차 세계대전", "제1차 세계대전", "세계대전"]);
+        &["world war i", "first world war", "wwi", "great war"],
+    ) || contains_any(subject, &["1차 세계대전", "제1차 세계대전"]);
     let prewar_or_crisis = contains_any(
         &lower,
         &[
@@ -796,6 +913,27 @@ fn wwi_prewar_crisis_subject(subject: &str) -> bool {
         ],
     );
     wwi && prewar_or_crisis
+}
+
+fn wwii_prewar_diplomacy_subject(subject: &str) -> bool {
+    let lower = subject.to_ascii_lowercase();
+    let wwii = contains_any(&lower, &["world war ii", "second world war", "wwii"])
+        || contains_any(subject, &["2차대전", "제2차 세계대전", "2차 세계대전"]);
+    let prewar_or_diplomacy = contains_any(
+        &lower,
+        &[
+            "prewar",
+            "pre-war",
+            "before",
+            "diplomacy",
+            "appeasement",
+            "munich",
+        ],
+    ) || contains_any(
+        subject,
+        &["전의", "전쟁 전", "전야", "외교", "유화", "뮌헨", "발발 전"],
+    );
+    wwii && prewar_or_diplomacy
 }
 
 fn phase_from_seed(
@@ -1727,6 +1865,49 @@ mod tests {
             .phases
             .iter()
             .all(|phase| !historical_phase_label_is_placeholder(&phase.label)));
+    }
+
+    #[test]
+    fn wwii_prewar_subject_constructs_default_phase_plan() {
+        let artifacts = ResearchControllerArtifacts::default();
+
+        let plan = build_historical_phase_plan(&artifacts, "2차대전 전의 각국 외교와 그 분석");
+        let labels = plan
+            .phases
+            .iter()
+            .map(|phase| phase.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(labels.contains(&"전간기 평화규범과 집행 공백"));
+        assert!(labels.contains(&"만주사변과 비승인 외교"));
+        assert!(labels.contains(&"뮌헨 협정"));
+        assert!(labels.contains(&"독소불가침조약과 폴란드 침공"));
+    }
+
+    #[test]
+    fn generic_prewar_subject_does_not_seed_wwii_phase_plan() {
+        let artifacts = ResearchControllerArtifacts::default();
+
+        let plan =
+            build_historical_phase_plan(&artifacts, "prewar diplomacy before the Korean War");
+        let labels = plan
+            .phases
+            .iter()
+            .map(|phase| phase.label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            labels.is_empty(),
+            "generic prewar subject should not seed any world-war default phases: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"뮌헨 협정"),
+            "generic prewar subject should not seed WWII phases: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"독소불가침조약과 폴란드 침공"),
+            "generic prewar subject should not seed WWII phases: {labels:?}"
+        );
     }
 
     #[test]

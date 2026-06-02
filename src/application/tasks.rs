@@ -45,6 +45,7 @@ mod benchmark_runtime;
 mod completion_shell;
 mod execution_shell;
 mod helpers;
+mod historical_phase_engine;
 mod lifecycle_policy;
 mod narrative_enrichment;
 mod narrative_merge;
@@ -74,6 +75,8 @@ use self::helpers::{
     scrape_task_identity_name, task_update_event, task_update_event_from_progress,
     TaskProgressSnapshot,
 };
+#[allow(unused_imports)]
+use self::historical_phase_engine::*;
 use self::lifecycle_policy::lifecycle_target_status;
 pub(crate) use self::lifecycle_policy::{
     is_delete_cancellable_task_status, DELETE_CANCELLABLE_TASK_STATUS_SQL_LIST,

@@ -4,6 +4,10 @@ Use this playbook when a request says to improve research quality along specific
 
 The reusable package contract is recorded in `bench.toml`. Treat that file as a convention manifest for humans and future automation; `research_bench` remains the execution engine.
 
+For last-attempt high/strict historical recovery work, prefer the isolated `historical_phase_engine` fixture gate before any further legacy-loop patch. Enable it only with `LIQUID_RESEARCH_HISTORICAL_PHASE_ENGINE=1`; default behavior remains legacy. The vertical slice is inserted before the per-iteration legacy loop in `execute_ai_task_with_quality_loop`, and on a matching historical request it saves directly through normal task completion. Its accepted output is rendered directly from engine-owned Source Cards, Claim Log, Phase Plan, and Phase Cards, and it must not use model-emitted artifact JSON, the legacy finalizer, the repair prompt loop, or the bounded work queue as the source of truth. If it fails, assign exactly one layer: `source_cards`, `claim_log`, `phase_plan`, `phase_card`, `renderer`, `acceptance`, or `integration`.
+
+The engine may persist compact controller artifacts and emit a compact `[RESEARCH_ARTIFACT_JSON]` appendix block, but those are replay/debug checkpoints only. Keep them sanitized: no raw prompts, provider payloads, raw model output, or raw diagnostics.
+
 For strict/high historical runs, the bounded pre-finalization queue is now the controller surface for routed artifact stabilization, source/claim readiness repair, phase-state review, bounded narrative enrichment, final-answer rendering, and acceptance review. It records typed work items, mapped debt, dependencies, layered wave/model-call/work-item/attempt budgets, sanitized fingerprints, and conservative terminal routing (`accepted`, `partial_trusted`, `blocked_needs_user`, `budget_exhausted`, `no_progress`, `failed`) without storing prompts, provider payloads, raw model output, or diagnostics.
 
 ## 1. Request Intake Template

@@ -23,10 +23,32 @@ pub(crate) fn test_state(db: SqlitePool, uploads_path: PathBuf) -> Arc<AppState>
     test_state_with_cli_launch_mode(db, uploads_path, CliLaunchMode::Auto)
 }
 
+fn test_state_with_historical_phase_engine_config(
+    db: SqlitePool,
+    uploads_path: PathBuf,
+    historical_phase_engine: bool,
+) -> Arc<AppState> {
+    test_state_with_config(
+        db,
+        uploads_path,
+        CliLaunchMode::Auto,
+        historical_phase_engine,
+    )
+}
+
 pub(crate) fn test_state_with_cli_launch_mode(
     db: SqlitePool,
     uploads_path: PathBuf,
     cli_launch_mode: CliLaunchMode,
+) -> Arc<AppState> {
+    test_state_with_config(db, uploads_path, cli_launch_mode, false)
+}
+
+fn test_state_with_config(
+    db: SqlitePool,
+    uploads_path: PathBuf,
+    cli_launch_mode: CliLaunchMode,
+    historical_phase_engine: bool,
 ) -> Arc<AppState> {
     let (tx, _) = broadcast::channel::<TaskUpdateEvent>(10);
     let data_dir = uploads_path.parent().unwrap_or(&uploads_path).to_path_buf();
@@ -43,8 +65,24 @@ pub(crate) fn test_state_with_cli_launch_mode(
         cli_launch_mode,
         research_implementation_id: "classic",
         research_implementation: classic_research_implementation(),
+        research_historical_phase_engine: historical_phase_engine,
         benchmark_fixture: None,
     })
+}
+
+pub(crate) fn test_state_with_historical_phase_engine(
+    db: SqlitePool,
+    uploads_path: PathBuf,
+) -> Arc<AppState> {
+    test_state_with_historical_phase_engine_config(db, uploads_path, true)
+}
+
+pub(crate) fn test_state_with_historical_phase_engine_enabled(
+    db: SqlitePool,
+    uploads_path: PathBuf,
+    historical_phase_engine: bool,
+) -> Arc<AppState> {
+    test_state_with_historical_phase_engine_config(db, uploads_path, historical_phase_engine)
 }
 
 pub(crate) fn response_status(response: impl IntoResponse) -> StatusCode {

@@ -59,6 +59,12 @@ pub(crate) struct Args {
         default_value_t = ResearchImplementationSelection::Classic
     )]
     pub(crate) research_implementation: ResearchImplementationSelection,
+    #[arg(
+        long,
+        env = "LIQUID_RESEARCH_HISTORICAL_PHASE_ENGINE",
+        default_value_t = false
+    )]
+    pub(crate) research_historical_phase_engine: bool,
 }
 
 pub(crate) fn setup_data_dir(
