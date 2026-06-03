@@ -2,6 +2,31 @@
 
 Historical release notes imported from the source repository. Original compare, issue, and commit links were removed in this sanitized snapshot.
 
+## [0.9.0](https://github.com/c86j224s/liquid/compare/liquid-v0.8.0...liquid-v0.9.0) (2026-06-03)
+
+
+### Features
+
+* **research:** add bounded research work queue ([d2b391c](https://github.com/c86j224s/liquid/commit/d2b391c716adcfaf4ef1aa32066307cf72612c60))
+* **research:** add historical event-card enrichment policy ([ea55e42](https://github.com/c86j224s/liquid/commit/ea55e421afe881cab4f13b249a8f7fc405fdb7cc))
+* **research:** add isolated historical phase engine ([075d3af](https://github.com/c86j224s/liquid/commit/075d3afaf5fa4d5a3bc8a6ce41c2ec9a073f0a22))
+* **research:** add phase-owned historical research state ([65458b4](https://github.com/c86j224s/liquid/commit/65458b40f11461baa211044a1fac3e767d7ced41))
+* **research:** improve historical phase engine ([a88d2ad](https://github.com/c86j224s/liquid/commit/a88d2ad489d94787ed589f5953696a248147c7c4))
+* **research:** run bounded narrative enrichment stage ([a79f40f](https://github.com/c86j224s/liquid/commit/a79f40f43e9ed9042c28c498915d89aa3a861c43))
+* strengthen research narrative quality gates ([80fe558](https://github.com/c86j224s/liquid/commit/80fe558284bd27917bdbdddb8c4839297938114c))
+
+
+### Bug Fixes
+
+* **research:** close enrichment host scrub gaps ([db1b67c](https://github.com/c86j224s/liquid/commit/db1b67c57a216da817c271c2aeccdf41809d4d97))
+* **research:** complete bounded work queue routes ([d66f8bc](https://github.com/c86j224s/liquid/commit/d66f8bcecfe292916a9890bc846e44b778b3fc60))
+* **research:** guard event enrichment grounding and repair prose leaks ([fb9a647](https://github.com/c86j224s/liquid/commit/fb9a6471af557e7c4a849e7360f86d535ed85474))
+* **research:** harden historical outputs and summaries ([ec68905](https://github.com/c86j224s/liquid/commit/ec689055786ffc979031df1db961408d8f2fc373))
+* **research:** keep event enrichment prompts transient ([71a19ce](https://github.com/c86j224s/liquid/commit/71a19ce1d26f37eee7fcc4ff071941bcbbadabc5))
+* **research:** polish historical phase engine output ([38cd467](https://github.com/c86j224s/liquid/commit/38cd4674fe0d9066a61834b037b72f7e15e5cc97))
+* **research:** scrub unsafe event-card enrichment text ([b3e7ce7](https://github.com/c86j224s/liquid/commit/b3e7ce7d132b7a827aa84d0feb8cfa958d91f19f))
+* **research:** tighten event-card enrichment source trust ([1246951](https://github.com/c86j224s/liquid/commit/1246951e18dbd5c1c765192cc0498b5fe9ddc9ca))
+
 ## 0.8.0 (2026-05-12)
 
 
