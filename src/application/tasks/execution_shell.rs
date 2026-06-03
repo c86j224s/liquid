@@ -92,6 +92,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
                 research_intensity: task.research_intensity.as_deref(),
                 fallback_used: task.fallback_used.as_deref() == Some("true"),
                 fallback_reason: task.fallback_reason.as_deref(),
+                persist_resolved_prompts: true,
             })
             .await;
         handle_task_completion(
@@ -117,6 +118,20 @@ pub(super) async fn execute_ai_task_with_quality_loop(
     let mut last_quality_failure: Option<String> = None;
     let mut pending_repair_hint_urls = HashSet::new();
     let mut controller_events = Vec::new();
+
+    if try_run_historical_phase_engine(
+        state,
+        &task,
+        &filenames,
+        cleanup_files.clone(),
+        file_prefix,
+        file_type,
+        user_prompt,
+    )
+    .await
+    {
+        return;
+    }
 
     for iteration in 1..=max_iterations {
         update_research_controller_progress(
@@ -169,6 +184,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
                 research_intensity: task.research_intensity.as_deref(),
                 fallback_used: task.fallback_used.as_deref() == Some("true"),
                 fallback_reason: task.fallback_reason.as_deref(),
+                persist_resolved_prompts: true,
             })
             .await;
 
@@ -263,6 +279,21 @@ pub(super) async fn execute_ai_task_with_quality_loop(
             Some(research_source_subject_for_task(&task, user_prompt)),
         )
         .await;
+        let _iteration_state = run_bounded_research_work_queue(
+            state,
+            &task,
+            &runtime,
+            model_name,
+            source,
+            file_prefix,
+            file_type,
+            &normalized_output,
+            user_prompt,
+            iteration,
+            max_iterations,
+            &mut controller_events,
+        )
+        .await;
         let finalized_output = finalize_task_research_output(
             state,
             task.id,
@@ -295,6 +326,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
         .await
         {
             Ok(validated_output) => {
+                mark_research_work_queue_accepted(state, task.id).await;
                 update_research_controller_progress(
                     state,
                     task.id,
@@ -406,6 +438,7 @@ pub(super) async fn execute_ai_task_with_quality_loop(
                 );
             }
             Err(failure) => {
+                mark_research_work_queue_budget_exhausted(state, task.id).await;
                 update_research_controller_progress(
                     state,
                     task.id,
@@ -632,7 +665,7 @@ pub(super) async fn persist_iteration_research_artifacts(
     artifacts.version = RESEARCH_CONTROLLER_ARTIFACT_VERSION;
     artifacts.events = events.to_vec();
     let diagnostics = load_research_source_diagnostics(state, task_id).await;
-    match parse_research_artifact_block(normalized_output, file_type) {
+    match parse_research_artifact_block_with_budget_repair(normalized_output, file_type) {
         Ok(mut parsed) => {
             let mut scaffold_authorized = has_local_pi_source_pack_source_card_scaffold(&artifacts);
             if let Some(source_cards) = local_pi_source_pack_scaffold_cards_for_iteration(

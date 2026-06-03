@@ -763,6 +763,7 @@ mod tests {
             research_debt: vec![],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: vec![],
             events: vec![],

@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli_launch_mode: args.cli_launch_mode,
         research_implementation_id,
         research_implementation,
+        research_historical_phase_engine: args.research_historical_phase_engine,
         benchmark_fixture: None,
     });
     application::tasks::spawn_ai_queue_workers(Arc::clone(&state), ai_workers, local_ai_workers);

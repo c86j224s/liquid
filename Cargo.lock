@@ -1613,6 +1613,7 @@ dependencies = [
  "liquid-protocol",
  "liquid-research-artifacts",
  "liquid-research-core",
+ "serde_json",
  "url",
 ]
 

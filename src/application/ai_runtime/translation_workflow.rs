@@ -9,6 +9,7 @@ pub(super) async fn execute_single_file_ko_translation(
     final_system_prompt: &str,
     safe_user_prompt: &str,
     allow_web_search: bool,
+    persist_resolved_prompts: bool,
 ) -> Option<String> {
     let content = read_translation_source_content(state, filename).await?;
     let chunks = split_translation_chunks(&content, KO_CHUNK_TARGET_CHARS);
@@ -19,7 +20,9 @@ pub(super) async fn execute_single_file_ko_translation(
             content.chars().count(),
             safe_user_prompt,
         );
-        if !store_resolved_prompts(state, task_id, final_system_prompt, &resolved_user_prompt).await
+        if persist_resolved_prompts
+            && !store_resolved_prompts(state, task_id, final_system_prompt, &resolved_user_prompt)
+                .await
         {
             return None;
         }
@@ -41,7 +44,9 @@ pub(super) async fn execute_single_file_ko_translation(
         content.chars().count(),
         ko_chunk_instruction_summary(safe_user_prompt)
     );
-    if !store_resolved_prompts(state, task_id, final_system_prompt, &resolved_user_prompt).await {
+    if persist_resolved_prompts
+        && !store_resolved_prompts(state, task_id, final_system_prompt, &resolved_user_prompt).await
+    {
         return None;
     }
 

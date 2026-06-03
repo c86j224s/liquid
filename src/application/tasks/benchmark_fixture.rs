@@ -176,6 +176,7 @@ fn render_benchmark_fixture_output(
             visible_urls.len(),
         ),
         reader_quality: None,
+        research_iteration_state: None,
         quality_gate: Some(quality_gate),
         warnings: if repair_complete {
             Vec::new()

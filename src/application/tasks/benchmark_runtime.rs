@@ -105,6 +105,7 @@ pub async fn run_research_benchmark_case_debug(
         cli_launch_mode,
         research_implementation_id: "classic",
         research_implementation: classic_research_implementation(),
+        research_historical_phase_engine: false,
         benchmark_fixture: match input.mode {
             ResearchBenchmarkMode::Fixture => Some(build_benchmark_fixture(&input)),
             ResearchBenchmarkMode::Live | ResearchBenchmarkMode::Replay => None,

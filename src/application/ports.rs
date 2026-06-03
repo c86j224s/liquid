@@ -79,9 +79,10 @@ pub(crate) struct ModelRuntimeRequest<'a> {
     pub(crate) research_intensity: Option<&'a str>,
     pub(crate) fallback_used: bool,
     pub(crate) fallback_reason: Option<&'a str>,
+    pub(crate) persist_resolved_prompts: bool,
 }
 
-pub(crate) trait ModelRuntime {
+pub(crate) trait ModelRuntime: Send + Sync {
     fn execute<'a>(&'a self, request: ModelRuntimeRequest<'a>) -> BoxFuture<'a, Option<String>>;
 }
 

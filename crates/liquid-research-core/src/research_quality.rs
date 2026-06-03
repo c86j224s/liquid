@@ -12,6 +12,7 @@ use crate::research_sources::{
 use scraper::{Html as ParsedHtml, Selector};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use url::Url;
 
 const MAX_RESEARCH_ARTIFACT_JSON_BYTES: usize = 24_000;
@@ -199,6 +200,266 @@ pub fn parse_research_artifact_block(
     }
     normalize_research_controller_artifacts(&mut artifacts);
     Ok(artifacts)
+}
+
+pub fn parse_research_artifact_block_with_budget_repair(
+    output: &str,
+    file_type: &str,
+) -> Result<ResearchControllerArtifacts, String> {
+    match parse_research_artifact_block(output, file_type) {
+        Ok(mut artifacts) => {
+            scrub_research_artifacts_for_commit_safe_persistence(&mut artifacts, false);
+            Ok(artifacts)
+        }
+        Err(error) if error.starts_with("research artifact JSON exceeds maximum size") => {
+            let markdown_artifact_scan = scan_markdown_research_artifact_blocks(output);
+            let html_artifact_scan = scan_html_research_artifact_blocks(output);
+            if markdown_artifact_scan.malformed || html_artifact_scan.malformed {
+                return Err("malformed machine-readable research artifact JSON block".to_string());
+            }
+            let markdown_artifact_json_blocks = markdown_artifact_scan.blocks;
+            let html_artifact_json_blocks = html_artifact_scan.blocks;
+            let artifact_block_count =
+                markdown_artifact_json_blocks.len() + html_artifact_json_blocks.len();
+            let artifact_json = match artifact_block_count {
+                0 => {
+                    return Err("missing machine-readable research artifact JSON block".to_string())
+                }
+                1 => if file_type == "html" {
+                    html_artifact_json_blocks
+                        .into_iter()
+                        .next()
+                        .or_else(|| markdown_artifact_json_blocks.into_iter().next())
+                } else {
+                    markdown_artifact_json_blocks
+                        .into_iter()
+                        .next()
+                        .or_else(|| html_artifact_json_blocks.into_iter().next())
+                }
+                .expect("single artifact block must be present"),
+                _ => {
+                    return Err(
+                        "multiple machine-readable research artifact JSON blocks are not allowed"
+                            .to_string(),
+                    );
+                }
+            };
+            let mut artifact_value = serde_json::from_str::<Value>(&artifact_json)
+                .map_err(|parse_error| format!("invalid research artifact JSON: {parse_error}"))?;
+            normalize_research_controller_artifact_value(&mut artifact_value)?;
+            strip_internal_local_pi_artifact_markers(&mut artifact_value);
+            let mut artifacts = serde_json::from_value::<ResearchControllerArtifacts>(
+                artifact_value,
+            )
+            .map_err(|parse_error| format!("invalid research artifact JSON: {parse_error}"))?;
+            if artifacts.version == 0 {
+                return Err("invalid research artifact JSON: version must be >= 1".to_string());
+            }
+            normalize_research_controller_artifacts(&mut artifacts);
+            scrub_research_artifacts_for_commit_safe_persistence(&mut artifacts, true);
+            artifacts = compact_research_artifacts_for_output(&artifacts);
+            scrub_research_artifacts_for_commit_safe_persistence(&mut artifacts, true);
+            push_unique_research_warning(
+                &mut artifacts.warnings,
+                "research_artifact_json_compacted_after_oversize".to_string(),
+            );
+            upsert_research_debt_item(
+                &mut artifacts.research_debt,
+                ResearchDebtItem {
+                    id: "artifact-json-compacted-after-oversize".to_string(),
+                    severity: "medium".to_string(),
+                    failed_gate: Some("artifact_parse".to_string()),
+                    missing_evidence: "machine-readable research artifact JSON exceeded the persistence budget and was parsed, normalized, and compacted before enrichment".to_string(),
+                    required_source_class: None,
+                    candidate_queries: Vec::new(),
+                    next_check_actions: vec!["Keep future artifact JSON compact; move long prose to the visible report rather than controller artifacts.".to_string()],
+                    status: "open".to_string(),
+                },
+            );
+            Ok(artifacts)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn scrub_research_artifacts_for_commit_safe_persistence(
+    artifacts: &mut ResearchControllerArtifacts,
+    compact_non_evidentiary_artifacts: bool,
+) {
+    artifacts.events.clear();
+
+    artifacts.source_cards.retain_mut(|card| {
+        let Some(public_url) = normalize_absolute_public_evidence_url(&card.url) else {
+            return false;
+        };
+        card.url = public_url;
+        if artifact_text_is_unsafe(&card.title) {
+            card.title = "Source".to_string();
+        }
+        if card.title.trim().is_empty() {
+            card.title = "Source".to_string();
+        }
+        if artifact_text_is_unsafe(&card.source_class) || card.source_class.trim().is_empty() {
+            card.source_class = infer_source_class(&card.url).to_string();
+        }
+        card.accessed_at = safe_artifact_optional_text(card.accessed_at.take());
+        card.extracted_facts
+            .retain(|fact| !fact.trim().is_empty() && !artifact_text_is_unsafe(fact));
+        card.limitation = safe_artifact_optional_text(card.limitation.take());
+        card.diagnostics_ref = safe_artifact_optional_text(card.diagnostics_ref.take());
+        card.confidence = safe_artifact_optional_text(card.confidence.take());
+        true
+    });
+
+    let source_ids = artifacts
+        .source_cards
+        .iter()
+        .map(|card| card.id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>();
+    artifacts.claim_log.retain_mut(|claim| {
+        if claim.claim.trim().is_empty() || artifact_text_is_unsafe(&claim.claim) {
+            return false;
+        }
+        claim.claim_type = safe_artifact_optional_text(claim.claim_type.take());
+        claim.confidence = safe_artifact_optional_text(claim.confidence.take());
+        claim.uncertainty_note = safe_artifact_optional_text(claim.uncertainty_note.take());
+        claim
+            .support_source_card_ids
+            .retain(|id| source_ids.contains(id.trim()) && valid_artifact_id_text(id.trim()));
+        claim.support_urls = claim
+            .support_urls
+            .drain(..)
+            .filter_map(|url| normalize_absolute_public_evidence_url(&url))
+            .collect();
+        !claim.support_source_card_ids.is_empty() || !claim.support_urls.is_empty()
+    });
+
+    let claim_ids = artifacts
+        .claim_log
+        .iter()
+        .map(|claim| claim.id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>();
+    artifacts.conflict_map.retain_mut(|conflict| {
+        if conflict.topic.trim().is_empty() || artifact_text_is_unsafe(&conflict.topic) {
+            return false;
+        }
+        conflict
+            .conflicting_claim_ids
+            .retain(|id| claim_ids.contains(id.trim()));
+        conflict
+            .source_card_ids
+            .retain(|id| source_ids.contains(id.trim()));
+        conflict.resolution_status = safe_artifact_optional_text(conflict.resolution_status.take());
+        conflict.resolution_note = safe_artifact_optional_text(conflict.resolution_note.take());
+        true
+    });
+
+    for debt in &mut artifacts.research_debt {
+        if safe_debt_label(&debt.missing_evidence).is_none() {
+            debt.missing_evidence =
+                "Unsafe model-supplied research debt text was removed during artifact stabilization."
+                    .to_string();
+        }
+        debt.failed_gate = safe_artifact_optional_text(debt.failed_gate.take());
+        debt.required_source_class = safe_artifact_optional_text(debt.required_source_class.take());
+        retain_safe_debt_text_items(&mut debt.candidate_queries);
+        retain_safe_debt_text_items(&mut debt.next_check_actions);
+    }
+
+    if let Some(quality_gate) = artifacts.quality_gate.as_mut() {
+        quality_gate
+            .failure_messages
+            .retain(|message| !artifact_text_is_unsafe(message));
+        if artifact_text_is_unsafe(&quality_gate.status) || quality_gate.status.trim().is_empty() {
+            quality_gate.status = "failed".to_string();
+        }
+    }
+
+    retain_safe_debt_text_items(&mut artifacts.warnings);
+
+    if compact_non_evidentiary_artifacts {
+        if let Some(state) = artifacts.narrative_state.as_mut() {
+            let version = state.version.max(1);
+            let event_cards = std::mem::take(&mut state.event_cards);
+            *state = NarrativeState {
+                version,
+                event_cards,
+                ..NarrativeState::default()
+            };
+        }
+        let refs = HistoricalPlanningEvidenceRefs::new(artifacts);
+        if let Some(state) = artifacts.narrative_state.as_mut() {
+            scrub_event_cards_for_artifact_output(&mut state.event_cards, &refs);
+            retain_event_card_refs_for_current_ledgers(
+                &mut state.event_cards,
+                &artifacts.claim_log,
+                &artifacts.source_cards,
+            );
+        }
+        artifacts.reader_quality = None;
+    } else {
+        if artifacts
+            .narrative_state
+            .as_ref()
+            .is_some_and(narrative_state_has_unsafe_content)
+        {
+            push_unique_research_warning(
+                &mut artifacts.warnings,
+                "narrative_state_omitted_unsafe_content".to_string(),
+            );
+            artifacts.narrative_state = None;
+        }
+        if artifacts
+            .reader_quality
+            .as_ref()
+            .is_some_and(reader_quality_has_unsafe_content)
+        {
+            push_unique_research_warning(
+                &mut artifacts.warnings,
+                "reader_quality_omitted_unsafe_content".to_string(),
+            );
+            artifacts.reader_quality = None;
+        }
+    }
+    if artifacts
+        .narrative_state
+        .as_ref()
+        .is_some_and(narrative_state_is_effectively_empty)
+    {
+        artifacts.narrative_state = None;
+    }
+}
+
+fn safe_artifact_optional_text(value: Option<String>) -> Option<String> {
+    value.filter(|text| !artifact_text_is_unsafe(text))
+}
+
+fn narrative_state_has_unsafe_content(state: &NarrativeState) -> bool {
+    narrative_state_text_fragments(state)
+        .into_iter()
+        .any(|value| artifact_text_is_unsafe(&value))
+}
+
+fn reader_quality_has_unsafe_content(reader_quality: &ReaderQualityArtifacts) -> bool {
+    reader_quality_text_fragments(reader_quality)
+        .into_iter()
+        .any(|value| artifact_text_is_unsafe(&value))
+}
+
+fn push_unique_research_warning(warnings: &mut Vec<String>, warning: String) {
+    if !warnings.iter().any(|existing| existing == &warning) {
+        warnings.push(warning);
+    }
+}
+
+fn upsert_research_debt_item(debts: &mut Vec<ResearchDebtItem>, debt: ResearchDebtItem) {
+    if let Some(existing) = debts.iter_mut().find(|existing| existing.id == debt.id) {
+        *existing = debt;
+    } else {
+        debts.push(debt);
+    }
 }
 
 pub fn prompt_safe_research_text(value: &str, limit: usize) -> String {
@@ -930,6 +1191,15 @@ fn render_markdown_final_answer(
     final_answer = normalize_reader_markdown_heading_boundaries(&final_answer);
     if second_punic_war_subject(context) {
         final_answer = promote_second_punic_bold_phase_labels(&final_answer);
+    }
+    if let Some(phase_supplement) =
+        synthesize_grounded_historical_phase_prose_supplement(&final_answer, artifacts, context)
+    {
+        finalization.repaired_final_answer = true;
+        if !final_answer.trim().is_empty() {
+            final_answer.push_str("\n\n");
+        }
+        final_answer.push_str(&phase_supplement);
     }
     let repaired_section = format!("## 최종 답변 (Final Answer)\n\n{}", final_answer.trim());
     if final_answer_needs_repair(&repaired_section, context) {
@@ -3913,20 +4183,30 @@ fn has_artifact_prompt_like_content(value: &str) -> bool {
         "repair iteration",
         "quality gate failed",
         "raw diagnostics",
+        "raw_diagnostics",
         "source diagnostics",
+        "source_diagnostics",
         "source-diagnostics",
         "diagnostics json",
         "controller artifact json",
         "controller artifacts json",
+        "controller_artifact_json",
+        "controller_artifacts_json",
+        "controller_artifact",
+        "controller_artifacts",
         "controller-artifacts",
         "provider payload",
+        "provider_payload",
         "raw provider payload",
+        "raw_provider_payload",
         "payload json",
         "response body:",
         "response headers:",
         "controller json",
         "resolved system prompt",
         "resolved user prompt",
+        "resolved_system_prompt",
+        "resolved_user_prompt",
         "resolved-system-prompt",
         "resolved-user-prompt",
     ]
@@ -4525,6 +4805,17 @@ fn validate_reader_facing_internal_metadata_leaks(output: &str, failures: &mut V
         "outline_only_not_evidence",
         "repair_planning",
         "evidence_repair",
+        "source_pack",
+        "source pack status",
+        "source-pack status",
+        "source pack 상태",
+        "controller artifact",
+        "controller artifacts",
+        "research_controller",
+        "provider payload",
+        "resolved prompt",
+        "quality gate failed",
+        "validator-shaped",
     ] {
         if lower.contains(marker) {
             failures.push(format!(
@@ -5449,6 +5740,157 @@ fn synthesize_historical_richness_marker_supplement(
     (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
 
+fn synthesize_grounded_historical_phase_prose_supplement(
+    final_answer: &str,
+    artifacts: &ResearchControllerArtifacts,
+    context: &ResearchQualityContext<'_>,
+) -> Option<String> {
+    if !should_apply_historical_artifact_depth_gate(context) {
+        return None;
+    }
+    let state = artifacts.narrative_state.as_ref()?;
+    let refs = HistoricalPlanningEvidenceRefs::new(artifacts);
+    let cards = grounded_historical_event_cards(&state.event_cards, &refs)
+        .into_iter()
+        .map(|card| event_card_with_unsupported_details_removed(card, &refs))
+        .filter(event_card_has_grounded_phase_prose_detail)
+        .filter(event_card_visible_phase_prose_is_safe)
+        .take(8)
+        .collect::<Vec<_>>();
+    if cards.len() < 2 {
+        return None;
+    }
+    let lower_answer = final_answer.to_ascii_lowercase();
+    let visible_label_hits = cards
+        .iter()
+        .filter(|card| {
+            let label = compact_text(&card.label).to_ascii_lowercase();
+            !label.is_empty() && lower_answer.contains(&label)
+        })
+        .count();
+    if visible_label_hits >= cards.len().min(3) {
+        return None;
+    }
+    let mut out = String::from("### 국면별 전개와 해석\n");
+    for card in cards {
+        let heading = [
+            card.timeframe.as_deref().unwrap_or_default(),
+            card.label.as_str(),
+        ]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .map(compact_text)
+        .collect::<Vec<_>>()
+        .join(" — ");
+        if heading.is_empty() {
+            continue;
+        }
+        let actors = if card.actors.is_empty() {
+            "관련 행위자".to_string()
+        } else {
+            card.actors
+                .iter()
+                .take(4)
+                .map(|actor| compact_text(actor))
+                .collect::<Vec<_>>()
+                .join("·")
+        };
+        let region = card
+            .region_or_front
+            .as_deref()
+            .filter(|value| historical_useful_planning_text(Some(value), 4))
+            .map(compact_text)
+            .unwrap_or_else(|| "해당 전선/지역".to_string());
+        let trigger = card
+            .trigger
+            .as_deref()
+            .filter(|value| historical_useful_planning_text(Some(value), 12))
+            .map(compact_text)
+            .unwrap_or_else(|| "앞선 조건 변화가 이 국면을 열었습니다".to_string());
+        let development = card
+            .development
+            .as_deref()
+            .filter(|value| historical_useful_planning_text(Some(value), 24))
+            .map(compact_text)
+            .unwrap_or_else(|| {
+                card.claim_log_ids
+                    .first()
+                    .and_then(|claim_id| {
+                        artifacts
+                            .claim_log
+                            .iter()
+                            .find(|claim| claim.id.trim() == claim_id.trim())
+                    })
+                    .filter(|claim| !artifact_text_is_unsafe(&claim.claim))
+                    .map(|claim| compact_text(&claim.claim))
+                    .unwrap_or_else(|| {
+                        "확인된 Claim Log 범위 안에서 세부 전개를 더 좁혀야 합니다".to_string()
+                    })
+            });
+        let outcome = card
+            .outcome
+            .as_deref()
+            .filter(|value| historical_useful_planning_text(Some(value), 12))
+            .map(compact_text)
+            .unwrap_or_else(|| "다음 국면의 선택지를 좁히는 압력으로 남았습니다".to_string());
+        out.push_str(&format!(
+            "\n#### {}\n{}에서 {}가 맞물리며 국면이 시작됩니다. {} 전개상 핵심은 {}입니다. 그 결과 {}\n",
+            heading, region, actors, trigger, development, outcome
+        ));
+    }
+    let trimmed = out.trim().to_string();
+    (trimmed.lines().count() > 2).then_some(trimmed)
+}
+
+fn event_card_visible_phase_prose_is_safe(card: &crate::models::NarrativeEventCard) -> bool {
+    !artifact_text_is_unsafe(&card.label)
+        && card
+            .timeframe
+            .as_deref()
+            .is_none_or(|value| !artifact_text_is_unsafe(value))
+        && card
+            .actors
+            .iter()
+            .all(|value| !artifact_text_is_unsafe(value))
+        && card
+            .region_or_front
+            .as_deref()
+            .is_none_or(|value| !artifact_text_is_unsafe(value))
+        && card
+            .trigger
+            .as_deref()
+            .is_none_or(|value| !artifact_text_is_unsafe(value))
+        && card
+            .development
+            .as_deref()
+            .is_none_or(|value| !artifact_text_is_unsafe(value))
+        && card
+            .outcome
+            .as_deref()
+            .is_none_or(|value| !artifact_text_is_unsafe(value))
+        && card
+            .open_questions
+            .iter()
+            .all(|value| !artifact_text_is_unsafe(value))
+}
+
+fn event_card_has_grounded_phase_prose_detail(card: &crate::models::NarrativeEventCard) -> bool {
+    !historical_planning_text_is_placeholder(&card.label)
+        && card.label.trim() != "근거 연결 국면"
+        && (card
+            .trigger
+            .as_deref()
+            .is_some_and(|value| historical_useful_planning_text(Some(value), 12))
+            || card
+                .development
+                .as_deref()
+                .is_some_and(|value| historical_useful_planning_text(Some(value), 24))
+            || card
+                .outcome
+                .as_deref()
+                .is_some_and(|value| historical_useful_planning_text(Some(value), 12)))
+}
+
 fn synthesize_chronology_interpretation_supplement(
     artifacts: &ResearchControllerArtifacts,
 ) -> Option<String> {
@@ -5503,6 +5945,10 @@ fn synthesize_source_layer_supplement(artifacts: &ResearchControllerArtifacts) -
     ))
 }
 
+pub fn research_artifact_text_contains_unsafe_location_reference(text: &str) -> bool {
+    contains_url_like_text(text)
+}
+
 fn contains_url_like_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     if lower.contains("http://")
@@ -5516,27 +5962,315 @@ fn contains_url_like_text(text: &str) -> bool {
     {
         return true;
     }
-    lower
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == ':'))
-        .map(|token| token.trim_matches(['.', ',', ';', ':', ')', ']', '}']))
-        .filter(|token| !token.is_empty())
-        .any(|token| {
-            token.parse::<std::net::IpAddr>().is_ok_and(|ip| {
-                ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_multicast()
-                    || match ip {
-                        std::net::IpAddr::V4(ip) => {
-                            ip.is_private() || ip.is_link_local() || ip.is_broadcast()
-                        }
-                        std::net::IpAddr::V6(ip) => {
-                            ip.is_unique_local() || ip.is_unicast_link_local()
-                        }
-                    }
-            }) || token.ends_with(".local")
-                || token.ends_with(".internal")
-                || token.ends_with(".localhost")
+    artifact_text_contains_private_host_literal(&lower)
+}
+
+fn artifact_text_contains_private_host_literal(value: &str) -> bool {
+    artifact_text_contains_contextual_private_host_reference(value)
+        || artifact_text_contains_blocked_bracketed_host(value)
+        || value
+            .split(|ch: char| !artifact_host_candidate_char(ch))
+            .filter(|token| !token.is_empty())
+            .any(|token| {
+                artifact_free_text_host_token_is_blocked(token)
+                    || token.split(':').any(|part| {
+                        part.contains('.') && artifact_free_text_host_token_is_blocked(part)
+                    })
+            })
+}
+
+fn artifact_text_contains_contextual_private_host_reference(value: &str) -> bool {
+    let host_labels = ["host", "hostname", "source", "url", "origin", "endpoint"];
+    host_labels.iter().any(|label| {
+        artifact_text_contextual_private_host_match(value, label, ':')
+            || artifact_text_contextual_private_host_match(value, label, '=')
+    })
+}
+
+fn artifact_text_contextual_private_host_match(
+    haystack: &str,
+    label: &str,
+    separator: char,
+) -> bool {
+    for label_form in [
+        label.to_string(),
+        format!("\"{label}\""),
+        format!("'{label}'"),
+    ] {
+        let mut search_offset = 0usize;
+        while let Some(rel_idx) = haystack[search_offset..].find(&label_form) {
+            let idx = search_offset + rel_idx;
+            if !artifact_text_contextual_label_start_ok(haystack, idx)
+                || !artifact_text_contextual_label_end_ok(haystack, idx + label_form.len())
+            {
+                search_offset = idx + 1;
+                continue;
+            }
+            let after_label = &haystack[idx + label_form.len()..];
+            let after_label_trimmed = after_label.trim_start();
+            if !after_label_trimmed.starts_with(separator) {
+                search_offset = idx + 1;
+                continue;
+            }
+            let candidate = artifact_text_contextual_host_candidate(
+                &after_label_trimmed[separator.len_utf8()..],
+            );
+            if candidate.is_some_and(|candidate| artifact_host_token_is_blocked(candidate)) {
+                return true;
+            }
+            search_offset = idx + 1;
+        }
+    }
+    false
+}
+
+fn artifact_text_contextual_host_candidate(value: &str) -> Option<&str> {
+    let trimmed = value.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (value, quote) = match trimmed.chars().next() {
+        Some(quote @ ('\"' | '\'')) => (&trimmed[quote.len_utf8()..], Some(quote)),
+        _ => (trimmed, None),
+    };
+    let end = value
+        .char_indices()
+        .find_map(|(idx, ch)| {
+            if quote.is_some_and(|quote| ch == quote)
+                || (!artifact_host_candidate_char(ch) && !matches!(ch, '/' | '?' | '#'))
+            {
+                Some(idx)
+            } else {
+                None
+            }
         })
+        .unwrap_or(value.len());
+    let candidate = value[..end]
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|ch: char| matches!(ch, '[' | ']' | '.' | ':' | ',' | ';' | ')' | '}'));
+    (!candidate.is_empty()).then_some(candidate)
+}
+
+fn artifact_text_contextual_label_start_ok(haystack: &str, idx: usize) -> bool {
+    idx == 0
+        || haystack[..idx]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !artifact_text_contextual_identifier_char(ch))
+}
+
+fn artifact_text_contextual_label_end_ok(haystack: &str, idx: usize) -> bool {
+    idx >= haystack.len()
+        || haystack[idx..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !artifact_text_contextual_identifier_char(ch))
+}
+
+fn artifact_text_contextual_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn artifact_text_contains_blocked_bracketed_host(value: &str) -> bool {
+    let mut remaining = value;
+    while let Some(open) = remaining.find('[') {
+        let after_open = &remaining[open + 1..];
+        let Some(close) = after_open.find(']') else {
+            return false;
+        };
+        let host = &after_open[..close];
+        if artifact_host_token_is_blocked(host) {
+            return true;
+        }
+        remaining = &after_open[close + 1..];
+    }
+    false
+}
+
+fn artifact_host_candidate_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | ':' | '[' | ']' | 'x' | 'X')
+}
+
+fn artifact_host_token_is_blocked(token: &str) -> bool {
+    artifact_host_token_is_blocked_with_shorthand(token, true)
+}
+
+fn artifact_free_text_host_token_is_blocked(token: &str) -> bool {
+    artifact_host_token_is_blocked_with_shorthand(token, false)
+}
+
+fn artifact_host_token_is_blocked_with_shorthand(token: &str, allow_shorthand: bool) -> bool {
+    let token = token.trim();
+    if token.is_empty() {
+        return false;
+    }
+    let has_numeric_port = !token.contains("::")
+        && token.rsplit_once(':').is_some_and(|(_, port)| {
+            !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit())
+        });
+    let bracketed_ipv6 = token
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']').map(|(host, _)| host));
+    let mut host = if let Some(host) = bracketed_ipv6 {
+        host
+    } else if has_numeric_port {
+        token
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(token)
+    } else {
+        token
+    };
+    host = host
+        .trim_matches(|ch: char| matches!(ch, '[' | ']' | '.'))
+        .trim();
+    if !host.contains("::") {
+        host = host.trim_matches(':').trim();
+    }
+    if host.is_empty() {
+        return false;
+    }
+    let lower_host = host.to_ascii_lowercase();
+    if has_numeric_port && matches!(lower_host.as_str(), "internal" | "metadata" | "localhost") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return artifact_ip_is_private_or_internal(ip);
+    }
+    if host.as_bytes()[0].is_ascii_digit()
+        && (host.contains('.') || artifact_single_token_ipv4_literal_like(host))
+    {
+        if !allow_shorthand && !host.contains('.') && artifact_single_token_ipv4_literal_like(host)
+        {
+            return false;
+        }
+        if allow_shorthand && host.contains('.') && artifact_private_ipv4_shorthand_prefix(host) {
+            return true;
+        }
+        return artifact_parse_ipv4_style_host(host)
+            .map(|ip| artifact_ip_is_private_or_internal(IpAddr::V4(ip)))
+            .unwrap_or(false);
+    }
+    artifact_private_domain_literal(host)
+}
+
+fn artifact_parse_ipv4_style_host(host: &str) -> Option<Ipv4Addr> {
+    if host.is_empty()
+        || !host.as_bytes()[0].is_ascii_digit()
+        || !host
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() || ch == 'x' || ch == 'X' || ch == '.')
+    {
+        return None;
+    }
+    if !host.contains('.') {
+        let value = artifact_parse_ipv4_number(host)?;
+        return Some(Ipv4Addr::from(value));
+    }
+    let parts = host
+        .split('.')
+        .map(artifact_parse_ipv4_number)
+        .collect::<Option<Vec<_>>>()?;
+    if parts.len() != 4 || parts.iter().any(|part| *part > 255) {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        parts[0] as u8,
+        parts[1] as u8,
+        parts[2] as u8,
+        parts[3] as u8,
+    ))
+}
+
+fn artifact_single_token_ipv4_literal_like(token: &str) -> bool {
+    token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"))
+        .is_some_and(|rest| rest.len() >= 8 && rest.chars().all(|ch| ch.is_ascii_hexdigit()))
+        || (token.len() >= 8 && token.chars().all(|ch| ch.is_ascii_digit()))
+        || (token.len() >= 9
+            && token.starts_with('0')
+            && token.chars().all(|ch| matches!(ch, '0'..='7')))
+}
+
+fn artifact_private_ipv4_shorthand_prefix(host: &str) -> bool {
+    let parts = host.split('.').collect::<Vec<_>>();
+    let first = parts
+        .first()
+        .and_then(|part| artifact_parse_ipv4_number(part));
+    let second = parts
+        .get(1)
+        .and_then(|part| artifact_parse_ipv4_number(part));
+    match (first, second) {
+        (Some(10), _) | (Some(127), _) | (Some(0), _) | (Some(169), Some(254)) => true,
+        (Some(192), Some(168)) => true,
+        (Some(172), Some(value)) if (16..=31).contains(&value) => true,
+        (Some(100), Some(value)) if (64..=127).contains(&value) => true,
+        (Some(198), Some(value)) if (18..=19).contains(&value) => true,
+        _ => false,
+    }
+}
+
+fn artifact_private_domain_literal(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost"
+        || host == "metadata.google.internal"
+        || host == "instance-data.ec2.internal"
+        || host.ends_with(".localhost")
+        || host.ends_with(".internal")
+        || host.ends_with(".local")
+        || host.ends_with(".localdomain")
+        || host.ends_with(".home.arpa")
+}
+
+fn artifact_parse_ipv4_number(value: &str) -> Option<u32> {
+    if value.is_empty() {
+        return None;
+    }
+    let (digits, radix) = if let Some(rest) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        (rest, 16)
+    } else if value.len() > 1 && value.starts_with('0') {
+        (&value[1..], 8)
+    } else {
+        (value, 10)
+    };
+    u32::from_str_radix(digits, radix).ok()
+}
+
+fn artifact_ip_is_private_or_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => artifact_ipv4_is_private_or_internal(ip),
+        IpAddr::V6(ip) => artifact_ipv6_is_private_or_internal(ip),
+    }
+}
+
+fn artifact_ipv4_is_private_or_internal(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+}
+
+fn artifact_ipv6_is_private_or_internal(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return artifact_ipv4_is_private_or_internal(mapped);
+    }
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
 }
 
 fn synthesize_legacy_followup_supplement(
@@ -9181,7 +9915,7 @@ fn normalized_host(raw_url: &str) -> Option<String> {
 fn topic_terms(topic: Option<&str>, instructions: Option<&str>) -> Vec<String> {
     let mut terms = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for source in topic {
+    if let Some(source) = topic {
         for term in tokenize_terms(source) {
             if seen.insert(term.clone()) {
                 terms.push(term);
@@ -9874,12 +10608,12 @@ impl HistoricalPlanningEvidenceRefs {
         if normalized.is_empty() || !normalized.iter().all(|id| self.claim_ids.contains(*id)) {
             return None;
         }
-        let mut claim_tokens = std::collections::HashSet::new();
+        let mut evidence_tokens = std::collections::HashSet::new();
         for claim_id in normalized {
             let material = self.claim_anchor_material.get(claim_id)?;
-            claim_tokens.extend(material.claim_tokens.iter().cloned());
+            evidence_tokens.extend(material.tokens.iter().cloned());
         }
-        Some(claim_tokens)
+        Some(evidence_tokens)
     }
 
     fn planning_text_is_semantically_grounded(
@@ -10106,8 +10840,10 @@ fn historical_detail_field_matches(
     }
     let matched = tokens.intersection(evidence_tokens).count();
     let unmatched = tokens.len().saturating_sub(matched);
-    if tokens.len() <= 8 {
-        matched == tokens.len()
+    if tokens.len() <= 3 {
+        matched == tokens.len() || (matched >= 1 && unmatched <= 1)
+    } else if tokens.len() <= 8 {
+        matched == tokens.len() || (matched >= 2 && unmatched <= 1)
     } else {
         matched >= 2 && unmatched <= 2 && matched * 100 >= tokens.len() * 80
     }
@@ -13370,6 +14106,11 @@ fn has_explicit_historical_context_for_development_gate(topic: &str) -> bool {
         "사료",
         "왕위계승전쟁",
         "계승전쟁",
+        "세계대전",
+        "전쟁",
+        "혁명",
+        "외교",
+        "위기",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
@@ -14858,6 +15599,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -14928,6 +15670,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -15030,6 +15773,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -15126,6 +15870,7 @@ data-research-artifacts
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -15879,6 +16624,283 @@ Visible footer.
     }
 
     #[test]
+    fn budget_repair_salvages_oversized_valid_artifact_core_ledgers() {
+        let bulky = "상세 배경 ".repeat(4000);
+        let artifact = serde_json::json!({
+            "version": 1,
+            "source_cards": [{
+                "id": "S1",
+                "url": "https://example.org/wwi",
+                "title": "WWI source",
+                "source_class": "authoritative_secondary",
+                "extracted_facts": [bulky]
+            }],
+            "claim_log": [{
+                "id": "C1",
+                "claim": "1914년 7월 최후통첩은 오스트리아-헝가리와 세르비아의 외교 선택지를 좁혔다.",
+                "support_source_card_ids": ["S1"],
+                "confidence": "medium"
+            }],
+            "narrative_state": {
+                "version": 1,
+                "event_cards": [{
+                    "label": "7월 최후통첩",
+                    "timeframe": "1914년 7월",
+                    "actors": ["오스트리아-헝가리", "세르비아"],
+                    "region_or_front": "빈·베오그라드",
+                    "trigger": "강경 조건 제시",
+                    "outcome": "외교적 후퇴 공간 축소",
+                    "claim_log_ids": ["C1"],
+                    "source_ids": ["S1"]
+                }]
+            }
+        });
+        let output = format!(
+            "[RESEARCH_ARTIFACT_JSON]\n```json\n{}\n```",
+            serde_json::to_string_pretty(&artifact).unwrap()
+        );
+        assert!(output.len() > MAX_RESEARCH_ARTIFACT_JSON_BYTES);
+
+        let parsed = parse_research_artifact_block_with_budget_repair(&output, "md").unwrap();
+
+        assert!(!parsed.source_cards.is_empty());
+        assert!(!parsed.claim_log.is_empty());
+        assert!(parsed
+            .narrative_state
+            .as_ref()
+            .is_some_and(|state| !state.event_cards.is_empty()));
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning == "research_artifact_json_compacted_after_oversize"));
+    }
+
+    #[test]
+    fn budget_repair_scrubs_commit_unsafe_oversized_artifact_fields() {
+        let bulky = "상세 배경 ".repeat(4000);
+        let artifact = serde_json::json!({
+            "version": 1,
+            "events": [{
+                "stage": "raw_provider_payload",
+                "iteration": 1,
+                "max_iterations": 1,
+                "status": "done",
+                "detail": "resolved_user_prompt: do not persist"
+            }],
+            "source_cards": [{
+                "id": "S1",
+                "url": "https://example.org/wwi",
+                "title": "resolved_user_prompt source title",
+                "source_class": "authoritative_secondary",
+                "extracted_facts": [
+                    bulky,
+                    "raw_provider_payload from metadata.google.internal must not persist"
+                ],
+                "limitation": "controller artifacts json should not persist",
+                "diagnostics_ref": "source diagnostics payload",
+                "confidence": "high"
+            }, {
+                "id": "S2",
+                "url": "http://127.0.0.1/internal",
+                "title": "Local debug",
+                "source_class": "diagnostic",
+                "extracted_facts": ["private local fact"]
+            }],
+            "claim_log": [{
+                "id": "C1",
+                "claim": "1914년 7월 최후통첩은 오스트리아-헝가리와 세르비아의 외교 선택지를 좁혔다.",
+                "support_source_card_ids": ["S1", "S2"],
+                "support_urls": ["https://example.org/claim", "http://127.0.0.1/claim"],
+                "uncertainty_note": "resolved_user_prompt leaked note"
+            }],
+            "research_debt": [{
+                "id": "D1",
+                "severity": "medium",
+                "failed_gate": "raw_provider_payload",
+                "missing_evidence": "metadata.google.internal source diagnostics should not persist",
+                "candidate_queries": ["resolved_user_prompt query", "July crisis official source"],
+                "next_check_actions": ["controller artifacts json review", "Check a public source"],
+                "status": "open"
+            }],
+            "quality_gate": {
+                "status": "failed",
+                "failure_messages": ["raw provider payload leaked", "source:0177.0.0.1", "needs source cards"],
+                "unsupported_claim_count": 0,
+                "unresolved_conflict_count": 0,
+                "open_debt_count": 1
+            },
+            "warnings": ["provider payload warning", "safe_warning"]
+        });
+        let output = format!(
+            "[RESEARCH_ARTIFACT_JSON]\n```json\n{}\n```",
+            serde_json::to_string_pretty(&artifact).unwrap()
+        );
+        assert!(output.len() > MAX_RESEARCH_ARTIFACT_JSON_BYTES);
+
+        let parsed = parse_research_artifact_block_with_budget_repair(&output, "md").unwrap();
+        let serialized = serde_json::to_string(&parsed).unwrap().to_ascii_lowercase();
+
+        assert_eq!(parsed.source_cards.len(), 1);
+        assert_eq!(parsed.source_cards[0].id, "S1");
+        assert_eq!(parsed.claim_log.len(), 1);
+        assert_eq!(parsed.claim_log[0].support_source_card_ids, vec!["S1"]);
+        for forbidden in [
+            "raw_provider_payload",
+            "raw provider payload",
+            "resolved_user_prompt",
+            "metadata.google.internal",
+            "127.0.0.1",
+            "controller artifacts json",
+            "source diagnostics",
+            "provider payload",
+            "2130706433",
+            "0x7f000001",
+            "0177.0.0.1",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "forbidden marker survived: {forbidden}\n{serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_text_scrub_flags_obfuscated_private_hosts() {
+        for value in [
+            "source:2130706433/latest",
+            "host=0x7f000001",
+            "source:0177.0.0.1",
+            "source:10.0/latest",
+            "endpoint=[::1]/latest",
+            "source:[::ffff:127.0.0.1]/latest",
+            "source:[::ffff:7f00:1]/latest",
+            "url=169.254.169.254/meta-data",
+            "origin=instance-data.ec2.internal/latest",
+        ] {
+            assert!(
+                artifact_text_is_unsafe(value),
+                "missed unsafe value: {value}"
+            );
+        }
+        assert!(!artifact_text_is_unsafe(
+            "1914년 7월 위기에서 외교 선택지가 좁아졌다."
+        ));
+        assert!(!artifact_text_is_unsafe(
+            "10.0% casualty rate and 192.168 million fiscal estimate are ordinary prose quantities."
+        ));
+    }
+
+    #[test]
+    fn normal_sized_budget_parser_scrubs_commit_unsafe_artifact_fields() {
+        let artifact = serde_json::json!({
+            "version": 1,
+            "source_cards": [{
+                "id": "S1",
+                "url": "https://example.org/wwi",
+                "title": "raw_provider_payload source title",
+                "source_class": "authoritative_secondary",
+                "extracted_facts": [
+                    "1914년 7월 최후통첩은 외교 선택지를 좁혔다.",
+                    "source:2130706433/latest diagnostic must not persist"
+                ],
+                "diagnostics_ref": "resolved_user_prompt"
+            }, {
+                "id": "S2",
+                "url": "http://127.0.0.1/internal",
+                "title": "Local debug",
+                "source_class": "diagnostic",
+                "extracted_facts": ["private local fact"]
+            }],
+            "claim_log": [{
+                "id": "C1",
+                "claim": "1914년 7월 최후통첩은 오스트리아-헝가리와 세르비아의 외교 선택지를 좁혔다.",
+                "support_source_card_ids": ["S1", "S2"],
+                "support_urls": ["http://127.0.0.1/claim"],
+                "uncertainty_note": "provider_payload"
+            }],
+            "research_debt": [{
+                "id": "D1",
+                "severity": "medium",
+                "failed_gate": "raw_provider_payload",
+                "missing_evidence": "metadata.google.internal diagnostic text",
+                "candidate_queries": ["July crisis public source"],
+                "next_check_actions": ["Check public source"],
+                "status": "open"
+            }],
+            "narrative_state": {
+                "version": 1,
+                "event_cards": [{
+                    "label": "7월 최후통첩",
+                    "trigger": "http://127.0.0.1/private should remove state",
+                    "claim_log_ids": ["C1"],
+                    "source_ids": ["S1"]
+                }]
+            },
+            "reader_quality": {
+                "argument_graph": {
+                    "nodes": [{
+                        "id": "N1",
+                        "label": "provider payload node"
+                    }]
+                }
+            },
+            "quality_gate": {
+                "status": "failed",
+                "failure_messages": ["raw provider payload leaked", "needs source cards"],
+                "unsupported_claim_count": 0,
+                "unresolved_conflict_count": 0,
+                "open_debt_count": 1
+            },
+            "warnings": ["resolved_user_prompt warning", "host=0x7f000001", "safe_warning"]
+        });
+        let output = format!(
+            "[RESEARCH_ARTIFACT_JSON]\n```json\n{}\n```",
+            serde_json::to_string(&artifact).unwrap()
+        );
+        assert!(output.len() < MAX_RESEARCH_ARTIFACT_JSON_BYTES);
+
+        let parsed = parse_research_artifact_block_with_budget_repair(&output, "md").unwrap();
+        let serialized = serde_json::to_string(&parsed).unwrap().to_ascii_lowercase();
+
+        assert_eq!(parsed.source_cards.len(), 1);
+        assert_eq!(parsed.claim_log.len(), 1);
+        assert_eq!(parsed.claim_log[0].support_source_card_ids, vec!["S1"]);
+        assert!(parsed.narrative_state.is_none());
+        assert!(parsed.reader_quality.is_none());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning == "narrative_state_omitted_unsafe_content"));
+        for forbidden in [
+            "raw_provider_payload",
+            "raw provider payload",
+            "resolved_user_prompt",
+            "provider_payload",
+            "metadata.google.internal",
+            "127.0.0.1",
+            "provider payload",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "forbidden marker survived: {forbidden}\n{serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn budget_repair_rejects_malformed_oversized_artifact_safely() {
+        let oversized_but_malformed = format!(
+            "[RESEARCH_ARTIFACT_JSON]\n```json\n{{\"version\":1,\"claim_log\":[{{\"id\":\"C1\",\"claim\":\"{}\"}}]\n```",
+            "x".repeat(MAX_RESEARCH_ARTIFACT_JSON_BYTES)
+        );
+
+        let err = parse_research_artifact_block_with_budget_repair(&oversized_but_malformed, "md")
+            .unwrap_err();
+
+        assert!(!err.trim().is_empty(), "unexpected empty parse error");
+    }
+
+    #[test]
     fn normalizes_research_artifact_lengths_and_item_counts() {
         let source_cards = (0..(MAX_RESEARCH_ARTIFACT_ITEMS + 5))
             .map(|idx| {
@@ -16431,6 +17453,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -16777,6 +17800,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -16831,6 +17855,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -16894,6 +17919,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -16954,6 +17980,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17001,6 +18028,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17052,6 +18080,7 @@ Visible footer.
             research_debt: Vec::new(),
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17106,6 +18135,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17165,6 +18195,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: None,
             warnings: Vec::new(),
         };
@@ -17226,6 +18257,7 @@ Visible footer.
             }],
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             quality_gate: Some(crate::models::ResearchQualityGateArtifact {
                 status: "passed".to_string(),
                 failure_messages: Vec::new(),
@@ -17235,6 +18267,279 @@ Visible footer.
             }),
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn finalization_renders_grounded_historical_phase_card_prose() {
+        let mut artifacts = sample_finalization_artifacts();
+        artifacts.source_cards = vec![
+            crate::models::ResearchSourceCard {
+                id: "S1".to_string(),
+                url: "https://example.org/bosnia".to_string(),
+                title: "Bosnia crisis".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                extracted_facts: vec!["1908-1909년 보스니아 병합 위기에서 오스트리아-헝가리, 세르비아, 러시아가 발칸 이해관계로 충돌했다.".to_string()],
+                ..crate::models::ResearchSourceCard::default()
+            },
+            crate::models::ResearchSourceCard {
+                id: "S2".to_string(),
+                url: "https://example.org/july".to_string(),
+                title: "July ultimatum".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                extracted_facts: vec!["1914년 7월 최후통첩 국면에서 오스트리아-헝가리와 세르비아의 외교 선택지가 좁아졌다.".to_string()],
+                ..crate::models::ResearchSourceCard::default()
+            },
+        ];
+        artifacts.claim_log = vec![
+            crate::models::ResearchClaimLogEntry {
+                id: "C1".to_string(),
+                claim: "1908-1909년 보스니아 병합 위기 국면에서 오스트리아-헝가리의 병합 선언은 세르비아와 러시아의 발칸 이해관계를 압박했고, 러시아의 후퇴는 다음 위기에서 체면 회복 압력으로 남았다.".to_string(),
+                support_source_card_ids: vec!["S1".to_string()],
+                confidence: Some("medium".to_string()),
+                ..crate::models::ResearchClaimLogEntry::default()
+            },
+            crate::models::ResearchClaimLogEntry {
+                id: "C2".to_string(),
+                claim: "1914년 7월 최후통첩 국면에서 오스트리아-헝가리는 독일의 지지를 배경으로 세르비아에 강경 조건을 제시했고, 부분 수용에도 전쟁 결정이 진행되어 외교적 후퇴 공간이 좁아졌다.".to_string(),
+                support_source_card_ids: vec!["S2".to_string()],
+                confidence: Some("medium".to_string()),
+                ..crate::models::ResearchClaimLogEntry::default()
+            },
+        ];
+        artifacts.narrative_state = Some(crate::models::NarrativeState {
+            version: 1,
+            event_cards: vec![
+                crate::models::NarrativeEventCard {
+                    label: "보스니아 병합 위기".to_string(),
+                    timeframe: Some("1908-1909년".to_string()),
+                    actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string(), "러시아".to_string()],
+                    region_or_front: Some("보스니아·발칸".to_string()),
+                    trigger: Some("보스니아 병합 위기".to_string()),
+                    development: Some("1908-1909년 보스니아 병합 위기 국면에서 오스트리아-헝가리의 병합 선언은 세르비아와 러시아의 발칸 이해관계를 압박했고, 러시아의 후퇴는 다음 위기에서 체면 회복 압력으로 남았다.".to_string()),
+                    outcome: None,
+                    claim_log_ids: vec!["C1".to_string()],
+                    source_ids: vec!["S1".to_string()],
+                    ..crate::models::NarrativeEventCard::default()
+                },
+                crate::models::NarrativeEventCard {
+                    label: "7월 최후통첩".to_string(),
+                    timeframe: Some("1914년 7월".to_string()),
+                    actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string(), "독일".to_string()],
+                    region_or_front: Some("빈·베오그라드".to_string()),
+                    trigger: Some("7월 최후통첩".to_string()),
+                    development: Some("1914년 7월 최후통첩 국면에서 오스트리아-헝가리는 독일의 지지를 배경으로 세르비아에 강경 조건을 제시했고, 부분 수용에도 전쟁 결정이 진행되어 외교적 후퇴 공간이 좁아졌다.".to_string()),
+                    outcome: None,
+                    claim_log_ids: vec!["C2".to_string()],
+                    source_ids: vec!["S2".to_string()],
+                    ..crate::models::NarrativeEventCard::default()
+                },
+            ],
+            ..crate::models::NarrativeState::default()
+        });
+        let context = ResearchQualityContext {
+            file_prefix: "[AI-Research]",
+            file_type: "md",
+            web_search_requested: true,
+            research_intensity: Some("high"),
+            quality_depth: Some("strict"),
+            research_topic: Some("1차 세계대전 전의 위기"),
+            research_instructions: None,
+            evidence_subject: Some("1차 세계대전 전의 위기"),
+        };
+        let draft =
+            "## 최종 답변 (Final Answer)\n\n전쟁 전 외교는 여러 위기가 누적된 과정입니다.\n";
+
+        let finalized = finalize_research_output(draft, &artifacts, None, &context);
+
+        assert!(finalized.output.contains("국면별 전개와 해석"));
+        assert!(finalized.output.contains("보스니아 병합 위기"));
+        assert!(finalized.output.contains("7월 최후통첩"));
+        assert!(!finalized.output.contains("source pack 상태"));
+        assert!(!finalized.output.contains("quality gate"));
+    }
+
+    #[test]
+    fn finalization_does_not_render_unsupported_event_card_detail_prose() {
+        let mut artifacts = sample_finalization_artifacts();
+        artifacts.source_cards = vec![
+            crate::models::ResearchSourceCard {
+                id: "S1".to_string(),
+                url: "https://example.org/bosnia".to_string(),
+                title: "Bosnia crisis".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                extracted_facts: vec!["1908-1909년 보스니아 병합 위기에서 오스트리아-헝가리, 세르비아, 러시아가 발칸 이해관계로 충돌했다.".to_string()],
+                ..crate::models::ResearchSourceCard::default()
+            },
+            crate::models::ResearchSourceCard {
+                id: "S2".to_string(),
+                url: "https://example.org/july".to_string(),
+                title: "July ultimatum".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                extracted_facts: vec!["1914년 7월 최후통첩 국면에서 오스트리아-헝가리와 세르비아의 외교 선택지가 좁아졌다.".to_string()],
+                ..crate::models::ResearchSourceCard::default()
+            },
+        ];
+        artifacts.claim_log = vec![
+            crate::models::ResearchClaimLogEntry {
+                id: "C1".to_string(),
+                claim: "1908-1909년 보스니아 병합 위기 국면에서 오스트리아-헝가리의 병합 선언은 세르비아와 러시아의 발칸 이해관계를 압박했다.".to_string(),
+                support_source_card_ids: vec!["S1".to_string()],
+                confidence: Some("medium".to_string()),
+                ..crate::models::ResearchClaimLogEntry::default()
+            },
+            crate::models::ResearchClaimLogEntry {
+                id: "C2".to_string(),
+                claim: "1914년 7월 최후통첩 국면에서 오스트리아-헝가리는 독일의 지지를 배경으로 세르비아에 강경 조건을 제시했다.".to_string(),
+                support_source_card_ids: vec!["S2".to_string()],
+                confidence: Some("medium".to_string()),
+                ..crate::models::ResearchClaimLogEntry::default()
+            },
+        ];
+        artifacts.narrative_state = Some(crate::models::NarrativeState {
+            version: 1,
+            event_cards: vec![
+                crate::models::NarrativeEventCard {
+                    label: "보스니아 병합 위기".to_string(),
+                    timeframe: Some("1908-1909년".to_string()),
+                    actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string()],
+                    region_or_front: Some("보스니아·발칸".to_string()),
+                    trigger: Some("오스트리아-헝가리의 병합 선언".to_string()),
+                    development: Some("1908-1909년 보스니아 병합 위기 국면에서 오스트리아-헝가리의 병합 선언은 세르비아와 러시아의 발칸 이해관계를 압박했다.".to_string()),
+                    outcome: Some("세르비아 러시아 외계 동맹".to_string()),
+                    claim_log_ids: vec!["C1".to_string()],
+                    source_ids: vec!["S1".to_string()],
+                    ..crate::models::NarrativeEventCard::default()
+                },
+                crate::models::NarrativeEventCard {
+                    label: "7월 최후통첩".to_string(),
+                    timeframe: Some("1914년 7월".to_string()),
+                    actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string()],
+                    region_or_front: Some("빈·베오그라드".to_string()),
+                    trigger: Some("7월 최후통첩".to_string()),
+                    development: Some("1914년 7월 최후통첩 국면에서 오스트리아-헝가리는 독일의 지지를 배경으로 세르비아에 강경 조건을 제시했다.".to_string()),
+                    outcome: None,
+                    claim_log_ids: vec!["C2".to_string()],
+                    source_ids: vec!["S2".to_string()],
+                    ..crate::models::NarrativeEventCard::default()
+                },
+            ],
+            ..crate::models::NarrativeState::default()
+        });
+        let context = ResearchQualityContext {
+            file_prefix: "[AI-Research]",
+            file_type: "md",
+            web_search_requested: true,
+            research_intensity: Some("high"),
+            quality_depth: Some("strict"),
+            research_topic: Some("1차 세계대전 전의 위기"),
+            research_instructions: None,
+            evidence_subject: Some("1차 세계대전 전의 위기"),
+        };
+
+        let finalized = finalize_research_output(
+            "## 최종 답변 (Final Answer)\n\n전쟁 전 외교는 여러 위기가 누적된 과정입니다.\n",
+            &artifacts,
+            None,
+            &context,
+        );
+        let visible_answer =
+            final_answer_section(&strip_research_artifact_blocks(&finalized.output))
+                .map(section_body_without_heading)
+                .expect("final answer");
+
+        assert!(visible_answer.contains("국면별 전개와 해석"));
+        assert!(!visible_answer.contains("외계 동맹"));
+        assert!(!visible_answer.contains("세르비아 러시아 외계"));
+        assert!(visible_answer.contains("병합 선언"));
+    }
+
+    #[test]
+    fn finalization_renders_phase_state_skeleton_cards_via_claim_grounding() {
+        let mut artifacts = sample_finalization_artifacts();
+        artifacts.source_cards = vec![
+            crate::models::ResearchSourceCard {
+                id: "S1".to_string(),
+                url: "https://example.org/old-regime".to_string(),
+                title: "Old Regime crisis".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                extracted_facts: vec!["1788-1789년 베르사유에서 재정 위기와 대표권 갈등이 루이 16세, 삼부회, 구체제 권위를 정면 충돌로 몰아갔다.".to_string()],
+                ..crate::models::ResearchSourceCard::default()
+            },
+            crate::models::ResearchSourceCard {
+                id: "S2".to_string(),
+                url: "https://example.org/republic".to_string(),
+                title: "Republican transition".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                extracted_facts: vec!["1792-1793년 파리에서 국민공회와 혁명 세력이 전쟁 압력과 왕정 붕괴 속에서 공화정을 선언했다.".to_string()],
+                ..crate::models::ResearchSourceCard::default()
+            },
+        ];
+        artifacts.claim_log = vec![
+            crate::models::ResearchClaimLogEntry {
+                id: "C1".to_string(),
+                claim: "1788-1789년 베르사유의 구체제 위기 국면에서 재정 파탄과 대표권 갈등이 루이 16세와 삼부회를 정면 충돌로 몰아가며 혁명 개시 압력을 만들었다.".to_string(),
+                support_source_card_ids: vec!["S1".to_string()],
+                confidence: Some("medium".to_string()),
+                ..crate::models::ResearchClaimLogEntry::default()
+            },
+            crate::models::ResearchClaimLogEntry {
+                id: "C2".to_string(),
+                claim: "1792-1793년 파리의 공화정 전환 국면에서 전쟁 압력과 왕정 붕괴가 국민공회의 결정을 밀어붙이며 공화정 선언으로 이어졌다.".to_string(),
+                support_source_card_ids: vec!["S2".to_string()],
+                confidence: Some("medium".to_string()),
+                ..crate::models::ResearchClaimLogEntry::default()
+            },
+        ];
+        artifacts.narrative_state = Some(crate::models::NarrativeState {
+            version: 1,
+            event_cards: vec![
+                crate::models::NarrativeEventCard {
+                    label: "구체제 위기".to_string(),
+                    timeframe: Some("1788-1789년".to_string()),
+                    actors: vec!["루이 16세".to_string(), "삼부회".to_string()],
+                    region_or_front: Some("베르사유".to_string()),
+                    trigger: Some("재정 위기와 대표권 갈등".to_string()),
+                    development: None,
+                    outcome: None,
+                    claim_log_ids: vec!["C1".to_string()],
+                    source_ids: vec!["S1".to_string()],
+                    ..crate::models::NarrativeEventCard::default()
+                },
+                crate::models::NarrativeEventCard {
+                    label: "공화정 전환".to_string(),
+                    timeframe: Some("1792-1793년".to_string()),
+                    actors: vec!["국민공회".to_string(), "혁명 세력".to_string()],
+                    region_or_front: Some("파리".to_string()),
+                    trigger: Some("전쟁 압력과 왕정 붕괴".to_string()),
+                    development: None,
+                    outcome: None,
+                    claim_log_ids: vec!["C2".to_string()],
+                    source_ids: vec!["S2".to_string()],
+                    ..crate::models::NarrativeEventCard::default()
+                },
+            ],
+            ..crate::models::NarrativeState::default()
+        });
+        let context = ResearchQualityContext {
+            file_prefix: "[AI-Research]",
+            file_type: "md",
+            web_search_requested: true,
+            research_intensity: Some("high"),
+            quality_depth: Some("strict"),
+            research_topic: Some("프랑스 혁명의 국면"),
+            research_instructions: None,
+            evidence_subject: Some("프랑스 혁명의 국면"),
+        };
+        let draft =
+            "## 최종 답변 (Final Answer)\n\n프랑스 혁명은 여러 국면을 거치며 급진화되었습니다.\n";
+
+        let finalized = finalize_research_output(draft, &artifacts, None, &context);
+
+        assert!(finalized.output.contains("국면별 전개와 해석"));
+        assert!(finalized.output.contains("구체제 위기"));
+        assert!(finalized.output.contains("공화정 전환"));
+        assert!(finalized.output.contains("재정 위기와 대표권 갈등"));
+        assert!(finalized.output.contains("공화정 선언"));
     }
 
     #[test]
@@ -22776,6 +24081,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -22805,6 +24111,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -22843,6 +24150,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: Some(NarrativeState::default()),
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -22872,6 +24180,7 @@ The revolution began because social tensions escalated. Its impact changed later
         let artifacts = ResearchControllerArtifacts {
             narrative_state: None,
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
@@ -23732,6 +25041,65 @@ evidence_layers: 공식 문서 / 보조 문서
             err.contains("reader-facing final answer leaks internal narrative or repair marker")
         );
         assert!(err.contains("topic_frame") || err.contains("section_outline"));
+    }
+
+    #[test]
+    fn rejects_final_answer_that_leaks_source_pack_status_repair_prose() {
+        let output = r#"
+## 최종 답변 (Final Answer)
+
+시간축과 chronology 측면에서는 source pack 상태는 success 이고 validator-shaped artifact repair가 완료되었으므로 열린 연구 부채 2건을 기준으로 본문을 보강해야 한다.
+
+# Verification Appendix
+[RESEARCH_ARTIFACT_JSON]
+```json
+{
+  "version": 1,
+  "source_cards": [
+    {
+      "id": "S1",
+      "url": "https://www.britannica.com/event/French-Revolution",
+      "title": "French Revolution",
+      "source_class": "authoritative_secondary"
+    }
+  ],
+  "claim_log": [
+    {
+      "id": "C1",
+      "claim": "혁명 전개는 단계별로 봐야 한다.",
+      "support_source_card_ids": ["S1"]
+    }
+  ],
+  "conflict_map": [],
+  "research_debt": []
+}
+```
+"#;
+        let context = ResearchQualityContext {
+            file_prefix: "[AI-Research]",
+            file_type: "md",
+            web_search_requested: false,
+            research_intensity: Some("medium"),
+            quality_depth: Some("medium"),
+            research_topic: Some(
+                "French Revolution background, development, impact, and significance",
+            ),
+            research_instructions: None,
+            evidence_subject: Some(
+                "French Revolution background, development, impact, and significance",
+            ),
+        };
+
+        let err = validate_research_output(output, &context).unwrap_err();
+
+        assert!(
+            err.contains("reader-facing final answer leaks internal narrative or repair marker")
+        );
+        assert!(
+            err.contains("source pack status")
+                || err.contains("source pack 상태")
+                || err.contains("validator-shaped")
+        );
     }
 
     #[test]
@@ -25668,6 +27036,7 @@ Historical event scaffold repair guidance:
                 ..NarrativeState::default()
             }),
             reader_quality: None,
+            research_iteration_state: None,
             ..ResearchControllerArtifacts::default()
         };
         let context = ResearchQualityContext {
