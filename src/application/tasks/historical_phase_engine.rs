@@ -319,7 +319,9 @@ pub(super) async fn try_run_historical_phase_engine(
         }
     }
 
-    persist_historical_phase_engine_artifacts(state, task.id, &outcome.artifacts).await;
+    let mut final_artifacts = outcome.artifacts.clone();
+    final_artifacts.events = controller_events.clone();
+    persist_historical_phase_engine_artifacts(state, task.id, &final_artifacts).await;
     handle_task_completion(
         state,
         task.id,
@@ -429,7 +431,6 @@ async fn build_historical_phase_engine_outcome(
     push_phase_plan_debts(&mut artifacts, &phase_plan);
     build_engine_planning_artifacts(&mut artifacts, &phase_plan, &subject);
     artifacts.events = controller_events.clone();
-    compact_engine_appendix_artifacts(&mut artifacts);
     persist_historical_phase_engine_artifacts(state, task.id, &artifacts).await;
 
     update_research_controller_progress(
@@ -535,7 +536,7 @@ async fn build_historical_phase_engine_outcome(
         output = normalize_ai_output(&output, file_type);
     }
 
-    artifacts.events.clear();
+    artifacts.events = controller_events.clone();
     persist_historical_phase_engine_artifacts(state, task.id, &artifacts).await;
     update_research_controller_progress(
         state,
@@ -558,6 +559,7 @@ async fn build_historical_phase_engine_outcome(
         controller_events,
     )
     .await;
+    artifacts.events = controller_events.clone();
 
     HistoricalPhaseEngineOutcome {
         terminal_status: verdict.terminal_status(),
@@ -1229,16 +1231,36 @@ fn engine_safe_reader_text(value: &str, limit: usize) -> Option<String> {
     Some(truncate_engine_artifact_text(&compact, limit))
 }
 
+fn markdown_inline_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '!' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn reader_markdown_fragment(value: &str, fallback: &str, limit: usize) -> String {
+    engine_safe_reader_text(value, limit)
+        .map(|value| markdown_inline_text(&value))
+        .unwrap_or_else(|| markdown_inline_text(fallback))
+}
+
 fn markdown_table_cell(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    markdown_inline_text(&value.split_whitespace().collect::<Vec<_>>().join(" "))
         .replace('|', "\\|")
 }
 
 fn reader_fragment(value: &str, fallback: &str, limit: usize) -> String {
-    engine_safe_reader_text(value, limit).unwrap_or_else(|| fallback.to_string())
+    reader_markdown_fragment(value, fallback, limit)
 }
 
 fn ensure_reader_sentence(value: &str) -> String {
@@ -1924,7 +1946,9 @@ fn build_causal_spine(card: &NarrativeEventCard) -> Vec<NarrativeCausalSpineStep
         NarrativeCausalSpineStep {
             step_type: "decision_point".to_string(),
             description: format!(
-                "이 국면은 단순한 사건 경과가 아니라 결정 지점이었다. 주요 행위자는 확전, 후퇴, 협상 중 무엇을 감수할지 판단해야 했다: {}",
+                "{}의 판단은 {}에서의 압박을 받아 다음 선택지의 비용을 재계산하는 결정 지점이 되었다: {}",
+                actor_text,
+                region_text,
                 trigger
             ),
             epistemic_status: Some("interpretation".to_string()),
@@ -2381,7 +2405,11 @@ fn historical_final_answer_template_failures(
     }
     let mentioned_cards = cards
         .iter()
-        .filter(|card| final_answer.contains(card.label.as_str()))
+        .filter(|card| {
+            final_answer.contains(card.label.as_str())
+                || rendered_match_fragment(&card.label, 100)
+                    .is_some_and(|label| final_answer.contains(label.as_str()))
+        })
         .count();
     let required_card_mentions = cards.len().min(4);
     if required_card_mentions > 0 && mentioned_cards < required_card_mentions {
@@ -2392,7 +2420,11 @@ fn historical_final_answer_template_failures(
     let mentioned_timeframes = cards
         .iter()
         .filter_map(|card| card.timeframe.as_deref())
-        .filter(|timeframe| final_answer.contains(timeframe))
+        .filter(|timeframe| {
+            final_answer.contains(timeframe)
+                || rendered_match_fragment(timeframe, 80)
+                    .is_some_and(|timeframe| final_answer.contains(timeframe.as_str()))
+        })
         .count();
     let required_timeframe_mentions = cards.len().min(3);
     if required_timeframe_mentions > 0 && mentioned_timeframes < required_timeframe_mentions {
@@ -2407,6 +2439,10 @@ fn historical_final_answer_template_failures(
         ));
     }
     failures
+}
+
+fn rendered_match_fragment(value: &str, limit: usize) -> Option<String> {
+    engine_safe_reader_text(value, limit).map(|value| markdown_inline_text(&value))
 }
 
 fn assess_historical_phase_engine_verdict(
@@ -2649,15 +2685,18 @@ fn render_historical_phase_engine_final_answer(
         let cards = state.event_cards.as_slice();
         let first = cards
             .first()
-            .map(|card| card.label.as_str())
-            .unwrap_or("첫 국면");
+            .map(|card| reader_markdown_fragment(&card.label, "첫 국면", 80))
+            .unwrap_or_else(|| "첫 국면".to_string());
         let last = cards
             .last()
-            .map(|card| card.label.as_str())
-            .unwrap_or("마지막 국면");
-        let thesis =
-            engine_safe_reader_text(state.working_thesis.as_deref().unwrap_or(subject), 360)
-                .unwrap_or_else(|| subject.to_string());
+            .map(|card| reader_markdown_fragment(&card.label, "마지막 국면", 80))
+            .unwrap_or_else(|| "마지막 국면".to_string());
+        let thesis = reader_markdown_fragment(
+            state.working_thesis.as_deref().unwrap_or(subject),
+            subject,
+            360,
+        );
+        let subject = reader_markdown_fragment(subject, "조사 주제", 220);
         sections.push(format!(
             "### 핵심 결론\n\n이 연구는 “{subject}”이라는 문제를 단일한 암살이나 선전포고의 폭발로 보지 않고, {first}에서 {last}까지 이어진 외교 위기·동맹 신뢰·군사 동원 판단의 연쇄로 읽는다. {thesis} 따라서 핵심은 각국의 목표를 나열하는 데 있지 않다. 위기가 반복될수록 후퇴 비용은 커지고, 협상 시간은 줄었으며, 어느 순간 전쟁을 피하는 선택지가 정치적으로도 군사적으로도 좁아졌다는 점이 더 중요하다."
         ));
@@ -2675,6 +2714,7 @@ fn render_historical_phase_engine_final_answer(
         sections.push(render_debate_map(state));
         sections.push(render_confirmed_and_uncertain(state));
     } else {
+        let subject = reader_markdown_fragment(subject, "조사 주제", 220);
         sections.push(format!(
             "### 핵심 결론\n\n{subject}는 현재 evidence 입력만으로 신뢰 가능한 국면별 연구 상태를 만들 수 없다. Source Cards와 Claim Log가 충분하지 않으므로 최종 답변은 차단된 상태로 남긴다."
         ));
@@ -2704,6 +2744,7 @@ fn phase_analytical_question(card: &NarrativeEventCard) -> String {
     } else if label.contains("벨기에") {
         "작전 계획은 왜 외교적 모호성을 영국 참전이라는 현실 선택으로 바꾸었는가?".to_string()
     } else {
+        let label = reader_markdown_fragment(label, "이 국면", 80);
         format!(
             "{}에서 확인되는 행위와 귀결은 다음 국면의 선택지를 어떤 방향으로 좁혔는가?",
             label
@@ -2717,13 +2758,13 @@ fn phase_specific_move(
     next: Option<&NarrativeEventCard>,
 ) -> String {
     let next_label = next
-        .map(|next| next.label.as_str())
-        .unwrap_or("전쟁 발발·참전 결정");
+        .map(|next| reader_markdown_fragment(&next.label, "다음 국면", 80))
+        .unwrap_or_else(|| "전쟁 발발·참전 결정".to_string());
     let actor = card
         .actors
         .first()
-        .map(String::as_str)
-        .unwrap_or("주요 행위자");
+        .map(|actor| reader_markdown_fragment(actor, "주요 행위자", 80))
+        .unwrap_or_else(|| "주요 행위자".to_string());
     match index % 4 {
         0 => format!(
             "여기서 눈여겨볼 움직임은 {actor}의 선택이 단순한 국면 종결이 아니라 {next_label}의 협상 비용을 미리 올렸다는 점이다."
@@ -2745,44 +2786,73 @@ fn render_phase_section(
     card: &NarrativeEventCard,
     next: Option<&NarrativeEventCard>,
 ) -> String {
-    let timeframe = card.timeframe.as_deref().unwrap_or("시기 미상 국면");
+    let label = reader_markdown_fragment(&card.label, "국면", 100);
+    let fallback_label = label.as_str();
+    let timeframe = reader_markdown_fragment(
+        card.timeframe.as_deref().unwrap_or("시기 미상 국면"),
+        "시기 미상 국면",
+        80,
+    );
     let actors = if card.actors.is_empty() {
         "주요 행위자".to_string()
     } else {
-        card.actors.join(", ")
+        card.actors
+            .iter()
+            .map(|actor| reader_markdown_fragment(actor, "주요 행위자", 80))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    let region = card.region_or_front.as_deref().unwrap_or("주요 지역/전선");
+    let region = reader_markdown_fragment(
+        card.region_or_front.as_deref().unwrap_or("주요 지역/전선"),
+        "주요 지역/전선",
+        100,
+    );
     let trigger = reader_fragment(
         card.trigger.as_deref().unwrap_or(&card.label),
-        &card.label,
+        fallback_label,
         360,
     );
     let development = reader_fragment(
         card.development.as_deref().unwrap_or(&card.label),
-        &card.label,
+        fallback_label,
         520,
     );
     let outcome = reader_fragment(
         card.outcome.as_deref().unwrap_or(&card.label),
-        &card.label,
+        fallback_label,
         360,
     );
     let causal = card
         .causal_spine
         .iter()
         .take(2)
-        .filter_map(|step| engine_safe_reader_text(step.description.as_str(), 260))
+        .filter_map(|step| {
+            engine_safe_reader_text(step.description.as_str(), 260)
+                .map(|value| markdown_inline_text(&value))
+        })
         .collect::<Vec<_>>()
         .join(" ");
     let layer_one = card
         .interpretive_layers
         .first()
-        .and_then(|layer| engine_safe_reader_text(layer.interpretation.as_str(), 360))
+        .map(|layer| {
+            reader_markdown_fragment(
+                layer.interpretation.as_str(),
+                "이 국면은 다음 선택지를 바꾸는 해석 층위를 만든다.",
+                360,
+            )
+        })
         .unwrap_or_else(|| "이 국면은 다음 선택지를 바꾸는 해석 층위를 만든다.".to_string());
     let layer_two = card
         .interpretive_layers
         .get(1)
-        .and_then(|layer| engine_safe_reader_text(layer.interpretation.as_str(), 360))
+        .map(|layer| {
+            reader_markdown_fragment(
+                layer.interpretation.as_str(),
+                "동시에 같은 압력은 즉각적 외교 충돌을 넘어 동맹·정치·군사 계산으로 확장된다.",
+                360,
+            )
+        })
         .unwrap_or_else(|| {
             "동시에 같은 압력은 즉각적 외교 충돌을 넘어 동맹·정치·군사 계산으로 확장된다."
                 .to_string()
@@ -2797,9 +2867,10 @@ fn render_phase_section(
     let move_sentence = phase_specific_move(index, card, next);
     let next_handoff = next
         .map(|next| {
+            let next_label = reader_markdown_fragment(&next.label, "다음 국면", 80);
             format!(
                 "그 압력은 곧 {}에서 더 좁은 시간표와 더 높은 후퇴 비용으로 나타났다.",
-                next.label
+                next_label
             )
         })
         .unwrap_or_else(|| {
@@ -2809,7 +2880,7 @@ fn render_phase_section(
     format!(
         "#### {}. {} ({})\n\n{} {} {}의 무대는 {}였고, 중심 행위자는 {}였다. 출발점은 {} 이어지는 전개는 {} 이 흐름의 귀결은 {} {}\n\n{} 확인된 causal spine은 다음과 같이 읽힌다: {} 이 연결은 새 사건을 덧붙이는 것이 아니라 같은 Claim Log가 묶는 계기·행위자·장소·귀결을 따라 다음 선택지가 좁아지는 방향을 설명한다.\n\n외교적 해석에서는 {} 군사·동원·정치 계산에서는 {} 근거의 한계도 남는다. 이 서술은 국면별 방향과 귀결을 지지하지만, 각국 내부 의사결정의 모든 세부 논쟁까지 확정하지는 않는다.",
         index + 1,
-        card.label,
+        label,
         timeframe,
         question_lead,
         question,
@@ -2835,13 +2906,13 @@ fn render_chronology_and_interpretation(state: &NarrativeState) -> String {
     let first = state
         .event_cards
         .first()
-        .map(|card| card.label.as_str())
-        .unwrap_or("the opening phase");
+        .map(|card| reader_markdown_fragment(&card.label, "the opening phase", 80))
+        .unwrap_or_else(|| "the opening phase".to_string());
     let last = state
         .event_cards
         .last()
-        .map(|card| card.label.as_str())
-        .unwrap_or("마지막 국면");
+        .map(|card| reader_markdown_fragment(&card.label, "마지막 국면", 80))
+        .unwrap_or_else(|| "마지막 국면".to_string());
     format!(
         "### 전개 순서와 해석\n\n연표가 중요한 이유는 {}에서 시작된 외교 압력이 다음 국면의 선택지를 줄이다가 결국 {}이 가능해지는 과정을 보여 주기 때문이다. 그러나 이 해석은 무제한 추론이 아니다. 계기, 행위자, 지역/전선, 결과가 같은 근거 묶음 안에서 함께 지지될 때에만 압력·선택·귀결을 연결한다. 그래서 본문은 “전쟁은 필연이었다”는 단정 대신, 반복된 위기 속에서 각국의 후퇴 비용과 동맹 신뢰 비용이 어떻게 커졌는지를 중심으로 설명한다.",
         first, last
@@ -2861,7 +2932,7 @@ fn render_actor_calculus(state: &NarrativeState) -> String {
                 markdown_table_cell(actor),
                 markdown_table_cell(&format!(
                     "{} 국면에서 {} 문제를 통해 외교적 선택지를 계산했다.",
-                    card.label,
+                    reader_markdown_fragment(&card.label, "해당", 80),
                     card.region_or_front.as_deref().unwrap_or("주요 전선/지역")
                 )),
                 markdown_table_cell(
@@ -2901,8 +2972,14 @@ fn render_debate_map(state: &NarrativeState) -> String {
     let debate = state
         .interpretive_tensions
         .first()
-        .map(|tension| tension.question.as_str())
-        .unwrap_or("어떤 인과 층위가 국면 전환에서 가장 큰 비중을 가졌는가");
+        .map(|tension| {
+            reader_markdown_fragment(
+                &tension.question,
+                "어떤 인과 층위가 국면 전환에서 가장 큰 비중을 가졌는가",
+                180,
+            )
+        })
+        .unwrap_or_else(|| "어떤 인과 층위가 국면 전환에서 가장 큰 비중을 가졌는가".to_string());
     format!(
         "### 주요 쟁점과 해석\n\n핵심 쟁점은 전쟁 직전 외교가 단순한 위기 목록인지, 아니면 반복될수록 후퇴 비용이 증가하는 누적 구조인지에 있다. 이 보고서는 후자에 가깝게 읽되, 모든 국면을 하나의 원인으로 환원하지 않는다. 외교·동맹, 군사·동원, 지역/전선, 제국 내부 정치가 서로 다른 속도로 압력을 키웠다. 제한된 질문은 다음과 같다. {}.",
         debate
@@ -2913,8 +2990,16 @@ fn render_confirmed_and_uncertain(state: &NarrativeState) -> String {
     let question = state
         .reader_questions
         .first()
-        .map(|question| question.question.as_str())
-        .unwrap_or("어떤 자료 층위가 가장 약한 국면을 더 단단하게 만들 수 있는가");
+        .map(|question| {
+            reader_markdown_fragment(
+                &question.question,
+                "어떤 자료 층위가 가장 약한 국면을 더 단단하게 만들 수 있는가",
+                180,
+            )
+        })
+        .unwrap_or_else(|| {
+            "어떤 자료 층위가 가장 약한 국면을 더 단단하게 만들 수 있는가".to_string()
+        });
     format!(
         "### 확인된 사실과 불확실성\n\n확인된 사실은 국면의 순서, 주요 행위자, 지역/전선, 그리고 각 국면의 결과가 다음 외교·군사 선택지를 압박했다는 점이다. 불확실성은 각국 내각·군부·여론의 내부 계산을 어느 정도 비중으로 읽어야 하는가에 남아 있다. 다음 확인 질문은 {}이다. 이 질문은 검증 부록의 연구 부채와 분리해 둔다. 본문은 독자가 현재 근거로 판단할 수 있는 범위와 추가 자료가 필요한 범위를 혼동하지 않도록 하기 위한 것이다.",
         question
@@ -2947,8 +3032,43 @@ fn serialized_appendix_artifacts(
     appendix_artifacts.events.clear();
     appendix_artifacts.quality_gate = Some(quality_gate.clone());
     compact_engine_appendix_artifacts(&mut appendix_artifacts);
-    let value = compact_engine_appendix_artifact_value(&appendix_artifacts);
-    serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+    let mut value = compact_engine_appendix_artifact_value(&appendix_artifacts);
+    escape_json_string_values_for_markdown(&mut value);
+    serde_json::to_string(&value)
+        .map(|json| escape_json_for_markdown_html(&json))
+        .unwrap_or_else(|_| "{}".to_string())
+}
+
+fn escape_json_for_markdown_html(value: &str) -> String {
+    value
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+}
+
+fn escape_json_string_values_for_markdown(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = text
+                .replace('[', "\\u005b")
+                .replace(']', "\\u005d")
+                .replace('(', "\\u0028")
+                .replace(')', "\\u0029")
+                .replace('`', "\\u0060")
+                .replace('!', "\\u0021");
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                escape_json_string_values_for_markdown(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                escape_json_string_values_for_markdown(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn compact_engine_appendix_artifact_value(
@@ -3165,7 +3285,16 @@ fn compact_engine_claim_log_for_research_grade(
 }
 
 fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts) {
-    artifacts.events.clear();
+    for event in &mut artifacts.events {
+        event.detail = event
+            .detail
+            .as_deref()
+            .map(|value| truncate_engine_artifact_text(value, 32));
+    }
+    if artifacts.events.len() > 12 {
+        let keep_from = artifacts.events.len() - 12;
+        artifacts.events.drain(0..keep_from);
+    }
     artifacts.source_cards.truncate(8);
     let valid_source_ids = artifacts
         .source_cards
@@ -3192,7 +3321,7 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
     }
     let retained_claims = artifacts.claim_log.clone();
     for source in &mut artifacts.source_cards {
-        source.title = truncate_engine_artifact_text(&source.title, 36);
+        source.title = truncate_engine_artifact_text(&source.title, 28);
         source.extracted_facts =
             compact_support_facts_for_source(&source.id, &source.extracted_facts, &retained_claims);
         source.limitation = source
@@ -3202,7 +3331,7 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
         source.diagnostics_ref = None;
     }
     for claim in &mut artifacts.claim_log {
-        claim.claim = truncate_engine_artifact_text(&claim.claim, 64);
+        claim.claim = truncate_engine_artifact_text(&claim.claim, 40);
         claim.support_urls.clear();
         claim.uncertainty_note = claim
             .uncertainty_note
@@ -3309,7 +3438,7 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
             card.development = card
                 .development
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 82));
+                .map(|value| truncate_engine_artifact_text(value, 70));
             card.outcome = card
                 .outcome
                 .as_deref()
@@ -3409,12 +3538,12 @@ fn render_phase_card_rows(artifacts: &ResearchControllerArtifacts) -> String {
         .map(|card| {
             format!(
                 "- **{}**: {} | actors: {} | region/front: {} | trigger: {} | outcome: {}",
-                card.label,
-                card.timeframe.as_deref().unwrap_or(""),
-                card.actors.join(", "),
-                card.region_or_front.as_deref().unwrap_or(""),
-                card.trigger.as_deref().unwrap_or(""),
-                card.outcome.as_deref().unwrap_or("")
+                markdown_inline_text(&card.label),
+                markdown_inline_text(card.timeframe.as_deref().unwrap_or("")),
+                markdown_inline_text(&card.actors.join(", ")),
+                markdown_inline_text(card.region_or_front.as_deref().unwrap_or("")),
+                markdown_inline_text(card.trigger.as_deref().unwrap_or("")),
+                markdown_inline_text(card.outcome.as_deref().unwrap_or(""))
             )
         })
         .collect::<Vec<_>>()
@@ -3481,10 +3610,13 @@ fn render_limits_rows(artifacts: &ResearchControllerArtifacts) -> String {
         .iter()
         .filter(|debt| debt.status != "closed")
     {
-        lines.push(format!("- {}", debt.missing_evidence));
+        lines.push(format!(
+            "- {}",
+            markdown_inline_text(&debt.missing_evidence)
+        ));
     }
     for warning in &artifacts.warnings {
-        lines.push(format!("- warning: {}", warning));
+        lines.push(format!("- warning: {}", markdown_inline_text(warning)));
     }
     if lines.is_empty() {
         "No open conflicts or research debt remained after the isolated historical phase pass."
@@ -3501,7 +3633,7 @@ fn render_quality_gate(quality_gate: &ResearchQualityGateArtifact) -> String {
         quality_gate
             .failure_messages
             .iter()
-            .map(|message| format!("- {}", message))
+            .map(|message| format!("- {}", markdown_inline_text(message)))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -3516,7 +3648,7 @@ fn render_quality_gate(quality_gate: &ResearchQualityGateArtifact) -> String {
 }
 
 fn escape_table_cell(value: &str) -> String {
-    value.replace('|', "\\|").replace('\n', " ")
+    markdown_inline_text(&value.replace('\n', " ")).replace('|', "\\|")
 }
 
 fn legacy_artifact_ignore_warning(existing: Option<&str>) -> Option<String> {
@@ -4294,6 +4426,217 @@ mod tests {
             .expect("narrative state")
             .event_cards[0];
         assert!(card_has_claim_backed_causal_spine(card));
+    }
+
+    #[test]
+    fn compaction_preserves_controller_events_for_persisted_artifacts() {
+        let mut artifacts = ResearchControllerArtifacts {
+            version: 1,
+            events: vec![ResearchControllerEvent {
+                stage: "quality_gate".to_string(),
+                iteration: 1,
+                max_iterations: 1,
+                status: "completed".to_string(),
+                detail: Some("finished".to_string()),
+            }],
+            source_cards: vec![ResearchSourceCard {
+                id: "S1".to_string(),
+                url: "https://example.com/source".to_string(),
+                title: "Source".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                accessed_at: None,
+                extracted_facts: vec!["A supported historical fact.".to_string()],
+                limitation: None,
+                diagnostics_ref: None,
+                confidence: Some("high".to_string()),
+            }],
+            ..ResearchControllerArtifacts::default()
+        };
+
+        compact_engine_appendix_artifacts(&mut artifacts);
+
+        assert_eq!(artifacts.events.len(), 1);
+        assert_eq!(artifacts.events[0].stage, "quality_gate");
+    }
+
+    #[test]
+    fn rendered_output_uses_full_event_cards_before_appendix_compaction() {
+        let event_cards = (1..=9)
+            .map(|index| NarrativeEventCard {
+                label: format!("Phase {index}"),
+                timeframe: Some(format!("19{index:02}")),
+                actors: vec![format!("Actor {index}")],
+                region_or_front: Some(format!("Region {index}")),
+                trigger: Some(format!("Trigger {index} narrowed choices.")),
+                development: Some(format!("Development {index} changed the next phase.")),
+                outcome: Some(format!("Outcome {index} carried pressure forward.")),
+                claim_log_ids: vec![format!("C{index}")],
+                source_ids: vec![format!("S{index}")],
+                causal_spine: Vec::new(),
+                interpretive_layers: Vec::new(),
+                confidence: Some("high".to_string()),
+                open_questions: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let artifacts = ResearchControllerArtifacts {
+            version: 1,
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                working_thesis: Some("All nine supported phases remain available.".to_string()),
+                event_cards,
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+        let plan = build_historical_phase_plan(&artifacts, "Nine phase test");
+        let output = render_historical_phase_engine_output(
+            "Nine phase test",
+            &artifacts,
+            &plan,
+            &ResearchQualityGateArtifact {
+                status: "research_grade".to_string(),
+                failure_messages: Vec::new(),
+                unsupported_claim_count: 0,
+                unresolved_conflict_count: 0,
+                open_debt_count: 0,
+            },
+        );
+
+        assert!(output.contains("#### 9. Phase 9"));
+        assert!(output.contains("Outcome 9 carried pressure forward."));
+    }
+
+    #[test]
+    fn verdict_mentions_match_escaped_phase_labels_and_timeframes() {
+        let event_cards = (1..=4)
+            .map(|index| NarrativeEventCard {
+                label: format!("Phase [{index}] (Escalation)"),
+                timeframe: Some(format!("19{index:02} [anchor] (window)")),
+                actors: vec![format!("Actor {index}")],
+                region_or_front: Some(format!("Region {index}")),
+                trigger: Some(format!("Trigger {index} narrowed choices.")),
+                development: Some(format!("Development {index} changed the next phase.")),
+                outcome: Some(format!("Outcome {index} carried pressure forward.")),
+                claim_log_ids: vec![format!("C{index}")],
+                source_ids: vec![format!("S{index}")],
+                causal_spine: Vec::new(),
+                interpretive_layers: Vec::new(),
+                confidence: Some("high".to_string()),
+                open_questions: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let artifacts = ResearchControllerArtifacts {
+            version: 1,
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                working_thesis: Some(
+                    "Escaped labels and timeframes still count as rendered mentions.".to_string(),
+                ),
+                event_cards: event_cards.clone(),
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+        let output =
+            render_historical_phase_engine_final_answer("Escaped mention test", &artifacts);
+
+        assert!(!output.contains("Phase [1] (Escalation)"));
+        assert!(output.contains("Phase \\[1\\] \\(Escalation\\)"));
+        assert!(!output.contains("1901 [anchor] (window)"));
+        assert!(output.contains("1901 \\[anchor\\] \\(window\\)"));
+
+        let failures = historical_final_answer_template_failures(&output, &event_cards);
+        assert!(
+            failures
+                .iter()
+                .all(|failure| !failure.contains("phase labels")
+                    && !failure.contains("time anchors")),
+            "unexpected mention failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn rendered_output_escapes_markdown_html_interpolation() {
+        let artifacts = ResearchControllerArtifacts {
+            version: 1,
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                working_thesis: Some(
+                    "<script>alert(1)</script> [link](javascript:alert(1))".to_string(),
+                ),
+                event_cards: vec![NarrativeEventCard {
+                    label: "<img src=x onerror=alert(1)>".to_string(),
+                    timeframe: Some("1914".to_string()),
+                    actors: vec!["Actor <b>unsafe</b>".to_string()],
+                    region_or_front: Some("Region".to_string()),
+                    trigger: Some("Trigger <script>alert(2)</script>".to_string()),
+                    development: Some("Development [x](javascript:alert(2))".to_string()),
+                    outcome: Some("Outcome `code`".to_string()),
+                    claim_log_ids: vec!["C1".to_string()],
+                    source_ids: vec!["S1".to_string()],
+                    causal_spine: vec![NarrativeCausalSpineStep {
+                        step_type: "decision_point".to_string(),
+                        description:
+                            "Causal <script>alert(3)</script> [causal](javascript:alert(3))"
+                                .to_string(),
+                        epistemic_status: Some("inference".to_string()),
+                        reasoning: None,
+                        limits: Vec::new(),
+                        claim_log_ids: vec!["C1".to_string()],
+                        source_ids: vec!["S1".to_string()],
+                    }],
+                    interpretive_layers: vec![
+                        NarrativeInterpretiveLayer {
+                            layer_type: "diplomacy_alliance".to_string(),
+                            interpretation:
+                                "Interpretive <img src=x onerror=alert(4)> [layer](javascript:alert(4))"
+                                    .to_string(),
+                            epistemic_status: Some("interpretation".to_string()),
+                            reasoning: None,
+                            limits: Vec::new(),
+                            claim_log_ids: vec!["C1".to_string()],
+                            source_ids: vec!["S1".to_string()],
+                        },
+                        NarrativeInterpretiveLayer {
+                            layer_type: "mobilization_politics".to_string(),
+                            interpretation: "Second layer <script>alert(5)</script>".to_string(),
+                            epistemic_status: Some("interpretation".to_string()),
+                            reasoning: None,
+                            limits: Vec::new(),
+                            claim_log_ids: vec!["C1".to_string()],
+                            source_ids: vec!["S1".to_string()],
+                        },
+                    ],
+                    confidence: Some("high".to_string()),
+                    open_questions: Vec::new(),
+                }],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+        let plan = build_historical_phase_plan(&artifacts, "<script>topic</script>");
+        let output = render_historical_phase_engine_output(
+            "<script>topic</script>",
+            &artifacts,
+            &plan,
+            &ResearchQualityGateArtifact {
+                status: "blocked".to_string(),
+                failure_messages: vec!["<script>failure</script>".to_string()],
+                unsupported_claim_count: 0,
+                unresolved_conflict_count: 0,
+                open_debt_count: 0,
+            },
+        );
+
+        assert!(!output.contains("<script>"));
+        assert!(!output.contains("<img"));
+        assert!(!output.contains("[link](javascript:alert(1))"));
+        assert!(!output.contains("[causal](javascript:alert(3))"));
+        assert!(!output.contains("[layer](javascript:alert(4))"));
+        assert!(output.contains("&lt;script&gt;"));
+        assert!(output.contains("\\[link\\]\\(javascript:alert\\(1\\)\\)"));
+        assert!(output.contains("\\[causal\\]\\(javascript:alert\\(3\\)\\)"));
+        assert!(output.contains("\\[layer\\]\\(javascript:alert\\(4\\)\\)"));
     }
 
     #[test]

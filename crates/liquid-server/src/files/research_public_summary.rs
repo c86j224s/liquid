@@ -246,12 +246,24 @@ pub fn redact_public_diagnostic_text(value: &str) -> String {
 }
 
 fn redact_local_paths(value: &str) -> String {
-    redact_prefixed_values(
+    let posix_redacted = redact_prefixed_values(
         value,
-        &["/tmp/", "/var/folders/", "/users/"],
+        &[
+            "/tmp/",
+            "/var/folders/",
+            "/users/",
+            "/home/",
+            "/workspace/",
+            "/workspaces/",
+            "/app/",
+            "/srv/",
+            "/mnt/",
+            "/opt/",
+        ],
         "[redacted-local-path]",
         is_sensitive_value_delimiter,
-    )
+    );
+    redact_windows_local_paths(&posix_redacted)
 }
 
 fn redact_hash_values(value: &str) -> String {
@@ -283,9 +295,13 @@ fn next_sensitive_key<'a>(
     [
         ("api_key", "[redacted-key]"),
         ("client_secret", "[redacted-key]"),
+        ("access_token", "[redacted-key]"),
+        ("token", "[redacted-key]"),
+        ("password", "[redacted-key]"),
         ("authorization", "[redacted-header]"),
         ("raw_provider_payload", "[redacted-payload]"),
         ("provider_payload", "[redacted-payload]"),
+        ("raw_model_output", "[redacted-payload]"),
         ("resolved_system_prompt", "[redacted-prompt]"),
         ("resolved_user_prompt", "[redacted-prompt]"),
         ("resolved_prompt", "[redacted-prompt]"),
@@ -298,18 +314,54 @@ fn next_sensitive_key<'a>(
             "[redacted-controller-artifacts]",
         ),
         (
+            "controller_artifact_json",
+            "[redacted-controller-artifacts]",
+        ),
+        (
             "research_source_diagnostics_json",
             "[redacted-source-diagnostics]",
         ),
         ("source_diagnostics_json", "[redacted-source-diagnostics]"),
+        ("source_diagnostics", "[redacted-source-diagnostics]"),
+        ("raw_diagnostics", "[redacted-source-diagnostics]"),
     ]
     .into_iter()
     .filter_map(|(key, replacement)| {
-        lower[cursor..]
-            .find(key)
-            .map(|offset| (cursor + offset, key, replacement))
+        next_sensitive_key_start(lower, key, cursor).map(|start| (start, key, replacement))
     })
     .min_by_key(|(start, _, _)| *start)
+}
+
+fn next_sensitive_key_start(value: &str, key: &str, cursor: usize) -> Option<usize> {
+    let mut search_start = cursor;
+    while let Some(offset) = value[search_start..].find(key) {
+        let start = search_start + offset;
+        if sensitive_key_assignment_at(value, key, start) {
+            return Some(start);
+        }
+        search_start = start + key.len();
+    }
+    None
+}
+
+fn sensitive_key_assignment_at(value: &str, key: &str, start: usize) -> bool {
+    let before_ok = start == 0
+        || value[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_' && ch != '?' && ch != '&');
+    if !before_ok {
+        return false;
+    }
+    let mut cursor = start + key.len();
+    let bytes = value.as_bytes();
+    if cursor < value.len() && matches!(bytes[cursor], b'"' | b'\'') {
+        cursor += 1;
+    }
+    while cursor < value.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    cursor < value.len() && matches!(bytes[cursor], b'=' | b':')
 }
 
 fn consume_sensitive_assignment(value: &str, key: &str, key_end: usize) -> usize {
@@ -334,15 +386,11 @@ fn consume_sensitive_assignment(value: &str, key: &str, key_end: usize) -> usize
             cursor += 1;
         }
         if cursor < value.len() && matches!(bytes[cursor], b'"' | b'\'') {
-            let quote = bytes[cursor];
-            cursor += 1;
-            while cursor < value.len() && bytes[cursor] != quote {
-                cursor += 1;
+            if is_bulk_sensitive_key(key) {
+                consume_bulk_sensitive_value(value, cursor)
+            } else {
+                consume_quoted_sensitive_value(value, cursor).unwrap_or(value.len())
             }
-            if cursor < value.len() {
-                cursor += 1;
-            }
-            cursor
         } else {
             if is_bulk_sensitive_key(key) {
                 consume_bulk_sensitive_value(value, cursor)
@@ -362,23 +410,51 @@ fn is_bulk_sensitive_key(key: &str) -> bool {
         key,
         "raw_provider_payload"
             | "provider_payload"
+            | "raw_model_output"
             | "resolved_system_prompt"
             | "resolved_user_prompt"
             | "resolved_prompt"
             | "research_controller_artifacts_json"
             | "controller_artifacts_json"
+            | "controller_artifact_json"
             | "research_source_diagnostics_json"
             | "source_diagnostics_json"
+            | "source_diagnostics"
+            | "raw_diagnostics"
     )
 }
 
 fn consume_bulk_sensitive_value(value: &str, cursor: usize) -> usize {
     let bytes = value.as_bytes();
-    if cursor < value.len() && matches!(bytes[cursor], b'{' | b'[') {
+    if cursor < value.len() && matches!(bytes[cursor], b'"' | b'\'') {
+        consume_quoted_sensitive_value(value, cursor).unwrap_or(value.len())
+    } else if cursor < value.len() && matches!(bytes[cursor], b'{' | b'[') {
         consume_balanced_json_like(value, cursor).unwrap_or(value.len())
     } else {
         consume_until(value, cursor, |ch| ch == '\n')
     }
+}
+
+fn consume_quoted_sensitive_value(value: &str, cursor: usize) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let quote = *bytes.get(cursor)?;
+    if !matches!(quote, b'"' | b'\'') {
+        return None;
+    }
+    let mut idx = cursor + 1;
+    let mut escaped = false;
+    while idx < value.len() {
+        let byte = bytes[idx];
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == quote {
+            return Some(idx + 1);
+        }
+        idx += 1;
+    }
+    None
 }
 
 fn consume_balanced_json_like(value: &str, cursor: usize) -> Option<usize> {
@@ -431,6 +507,34 @@ fn redact_prefixed_values(
         output.push_str(&value[cursor..start]);
         output.push_str(replacement);
         cursor = consume_until(value, start + prefix.len(), is_delimiter);
+    }
+    output.push_str(&value[cursor..]);
+    output
+}
+
+fn redact_windows_local_paths(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    let bytes = value.as_bytes();
+    let mut idx = 0;
+    while idx + 2 < value.len() {
+        let drive = bytes[idx];
+        if drive.is_ascii_alphabetic()
+            && bytes[idx + 1] == b':'
+            && matches!(bytes[idx + 2], b'\\' | b'/')
+            && (idx == 0
+                || value[..idx]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| !ch.is_ascii_alphanumeric()))
+        {
+            output.push_str(&value[cursor..idx]);
+            output.push_str("[redacted-local-path]");
+            cursor = consume_until(value, idx + 3, is_sensitive_value_delimiter);
+            idx = cursor;
+        } else {
+            idx += 1;
+        }
     }
     output.push_str(&value[cursor..]);
     output
@@ -977,6 +1081,70 @@ mod tests {
         assert!(serialized.contains("[redacted-prompt]"));
         assert!(serialized.contains("[redacted-controller-artifacts]"));
         assert!(serialized.contains("[redacted-source-diagnostics]"));
+    }
+
+    #[test]
+    fn public_diagnostic_redaction_consumes_escaped_quoted_bulk_values() {
+        let redacted = redact_public_diagnostic_text(
+            r#"provider_payload="{\"secret\":\"leak\",\"nested\":{\"prompt\":\"hidden\"}}" resolved_prompt="{\"messages\":[\"system secret\"]}" source_diagnostics_json="{\"raw\":\"diagnostic leak\"}" status=500"#,
+        );
+
+        assert!(!redacted.contains("leak"));
+        assert!(!redacted.contains("hidden"));
+        assert!(!redacted.contains("system secret"));
+        assert!(!redacted.contains("diagnostic leak"));
+        assert!(redacted.contains("[redacted-payload]"));
+        assert!(redacted.contains("[redacted-prompt]"));
+        assert!(redacted.contains("[redacted-source-diagnostics]"));
+        assert!(redacted.contains("status=500"));
+    }
+
+    #[test]
+    fn public_diagnostic_redaction_consumes_sensitive_alias_values() {
+        let redacted = redact_public_diagnostic_text(
+            r#"token=plain-token access_token="quoted-access-token" password='quoted-password' raw_model_output={"raw":"model leak"} controller_artifact_json="{\"artifact\":\"controller leak\"}" source_diagnostics={"raw":"source leak"} raw_diagnostics=[{"raw":"diagnostic leak"}] status=500"#,
+        );
+
+        assert!(!redacted.contains("plain-token"));
+        assert!(!redacted.contains("quoted-access-token"));
+        assert!(!redacted.contains("quoted-password"));
+        assert!(!redacted.contains("model leak"));
+        assert!(!redacted.contains("controller leak"));
+        assert!(!redacted.contains("source leak"));
+        assert!(!redacted.contains("diagnostic leak"));
+        assert!(redacted.contains("[redacted-key]"));
+        assert!(redacted.contains("[redacted-payload]"));
+        assert!(redacted.contains("[redacted-controller-artifacts]"));
+        assert!(redacted.contains("[redacted-source-diagnostics]"));
+        assert!(redacted.contains("status=500"));
+    }
+
+    #[test]
+    fn public_diagnostic_redaction_fail_closes_unterminated_raw_alias_values() {
+        let redacted = redact_public_diagnostic_text(
+            "raw_model_output=\"unterminated model leak token=secret status=500",
+        );
+
+        assert!(!redacted.contains("unterminated model leak"));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("status=500"));
+        assert_eq!(redacted, "[redacted-payload]");
+    }
+
+    #[test]
+    fn public_diagnostic_redaction_hides_common_local_paths() {
+        let redacted = redact_public_diagnostic_text(
+            r#"linux=/home/liquid/raw/a workspace=/workspace/app/raw/b app=/app/data/c opt=/opt/liquid/d win=C:\Users\liquid\AppData\Local\Temp\raw.json win2=D:/workspace/raw.json public=https://example.com/path"#,
+        );
+
+        assert!(!redacted.contains("/home/liquid"));
+        assert!(!redacted.contains("/workspace/app"));
+        assert!(!redacted.contains("/app/data"));
+        assert!(!redacted.contains("/opt/liquid"));
+        assert!(!redacted.contains(r"C:\Users\liquid"));
+        assert!(!redacted.contains("D:/workspace"));
+        assert!(redacted.contains("[redacted-local-path]"));
+        assert!(redacted.contains("<redacted-url:example.com>"));
     }
 
     #[test]
