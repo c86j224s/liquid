@@ -38,7 +38,7 @@ AI가 만든 결과도 원본을 덮어쓰지 않습니다. 번역, 조사, 스�
 - **Drawers**: published 지식을 주제별 서랍에 배정
 - **Scrape**: 웹 문서를 Markdown으로 저장, 참고 링크 별첨
 - **Scrape + Translate**: 스크랩 후 한국어 번역 draft 생성
-- **Research**: 문서 기반 조사, 여러 문서 융합 조사, 새 주제 조사. `[Research]`와 `[AI-Research]` 작업은 사용자 화면에서 같은 `Research` 시스템 태그로 표시되며, 조사 요청 상세에는 남아 있는 출처 문서가 클릭 가능한 링크로 표시됩니다. 삭제되었거나 찾을 수 없는 출처는 저장된 파일명 텍스트로 남깁니다. 고강도 조사 작업은 Source Cards, Claim Log, Conflict Map, Research Debt, 그리고 진단 요약을 함께 남기며, 파일 상세에서는 민감한 URL을 가린 요약만 노출합니다.
+- **Research**: 문서 기반 조사, 여러 문서 융합 조사, 새 주제 조사. `[Research]`와 `[AI-Research]` 작업은 사용자 화면에서 같은 `Research` 시스템 태그로 표시되며, 조사 요청 상세에는 남아 있는 출처 문서가 클릭 가능한 링크로 표시됩니다. 삭제되었거나 찾을 수 없는 출처는 저장된 파일명 텍스트로 남깁니다. 고강도 조사 작업은 Source Cards, Claim Log, Conflict Map, Research Debt, 그리고 진단 요약을 함께 남기며, 파일 상세에서는 민감한 URL, 로컬 경로, 자격 증명, 프롬프트, 원시 모델 출력, 컨트롤러/소스 진단 페이로드를 가리거나 집계한 공개 요약만 노출합니다.
 - **Research Benchmarks**: `docs/experiments/research-richness/README.md`와 `docs/experiments/research-richness/improvement-run.sh`로 fixture, replay, bounded live gate 흐름과 commit-safe 산출물 보존 규칙을 확인할 수 있습니다. 최신 리서치 파이프라인은 기존 Source Cards / Claim Log / Conflict Map / Research Debt를 유지한 채, 단일 숨김 artifact envelope 안에 additive Reader Quality (`argument_graph`, `narrative_plan`, `section_briefs`, `reader_critique`)와 벤치 관찰용 지표를 함께 기록합니다.
 - **Document lineage**: 완료된 작업과 후속 작업 출력은 출처 문서와의 직접 관계를 유지합니다. 뷰어는 현재 문서에서 출처 링크를 바로 열 수 있게 보여 주고, 번역/후속 조사/융합 조사 결과도 별도 draft로 남깁니다.
 - **Viewer**: Markdown/HTML 보기, 원본 복사, 빠른 위/아래 이동

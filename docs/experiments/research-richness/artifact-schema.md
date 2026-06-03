@@ -297,7 +297,7 @@ Prompt and finalization behavior:
 - `status`: `missed`, `blocked`, `found_not_adopted`, or `adopted`
 - `expected_host`: derived target host when known
 - `expected_source_class`: derived source class when known
-- `reason`: redacted explanation only; never include provider credentials, raw headers, or raw provider payloads
+- `reason`: redacted explanation only; never include provider credentials/tokens, raw headers, local paths, raw prompts, raw provider/model payloads, controller artifacts, or source diagnostics
 
 Visible appendix note:
 
