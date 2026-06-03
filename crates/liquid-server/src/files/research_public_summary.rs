@@ -111,7 +111,8 @@ pub(super) fn summarize_research_source_diagnostics_for_public_api(
 
 fn public_quality_gate_status(status: &str) -> Option<String> {
     match status.trim().to_ascii_lowercase().as_str() {
-        "passed" | "failed" | "untrusted" => Some(status.trim().to_ascii_lowercase()),
+        "passed" | "failed" | "untrusted" | "research_grade" | "explainer" | "partial"
+        | "blocked" => Some(status.trim().to_ascii_lowercase()),
         _ => None,
     }
 }

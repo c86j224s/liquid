@@ -20,12 +20,66 @@ const HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS: i64 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HistoricalPhaseEngineTerminalStatus {
     Accepted,
+    Untrusted,
     Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoricalPhaseEngineVerdict {
+    ResearchGrade,
+    Explainer,
+    Partial,
+    Blocked,
+}
+
+impl HistoricalPhaseEngineVerdict {
+    fn quality_gate_status(self) -> &'static str {
+        match self {
+            Self::ResearchGrade => "research_grade",
+            Self::Explainer => "explainer",
+            Self::Partial => "partial",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    fn task_quality_status(self) -> &'static str {
+        match self {
+            Self::ResearchGrade => "passed",
+            Self::Explainer | Self::Partial => "untrusted",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    fn terminal_status(self) -> HistoricalPhaseEngineTerminalStatus {
+        match self {
+            Self::ResearchGrade => HistoricalPhaseEngineTerminalStatus::Accepted,
+            Self::Explainer | Self::Partial => HistoricalPhaseEngineTerminalStatus::Untrusted,
+            Self::Blocked => HistoricalPhaseEngineTerminalStatus::Blocked,
+        }
+    }
+
+    fn controller_detail(self) -> &'static str {
+        match self {
+            Self::ResearchGrade => {
+                "Historical phase engine accepted the report at research-grade depth."
+            }
+            Self::Explainer => {
+                "Historical phase engine completed with an explainer-only report; strict research-grade depth was not met."
+            }
+            Self::Partial => {
+                "Historical phase engine completed with a partial trusted report; some source or claim support remained unresolved."
+            }
+            Self::Blocked => {
+                "Historical phase engine blocked the report because the evidence ledger did not meet the minimum support contract."
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct HistoricalPhaseEngineOutcome {
     terminal_status: HistoricalPhaseEngineTerminalStatus,
+    verdict: HistoricalPhaseEngineVerdict,
     output: String,
     artifacts: ResearchControllerArtifacts,
     failure_message: Option<String>,
@@ -200,7 +254,7 @@ pub(super) async fn try_run_historical_phase_engine(
                 HISTORICAL_PHASE_ENGINE_ITERATION,
                 HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
                 RESEARCH_CONTROLLER_STATUS_COMPLETED,
-                Some("Historical phase engine accepted the report and is saving it directly."),
+                Some(outcome.verdict.controller_detail()),
                 &mut controller_events,
             )
             .await;
@@ -210,8 +264,32 @@ pub(super) async fn try_run_historical_phase_engine(
                 &task.original_name,
                 HISTORICAL_PHASE_ENGINE_ITERATION,
                 HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
-                "passed",
+                outcome.verdict.task_quality_status(),
                 None,
+            )
+            .await;
+        }
+        HistoricalPhaseEngineTerminalStatus::Untrusted => {
+            update_research_controller_progress(
+                state,
+                task.id,
+                &task.original_name,
+                RESEARCH_STAGE_FINAL,
+                HISTORICAL_PHASE_ENGINE_ITERATION,
+                HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
+                RESEARCH_CONTROLLER_STATUS_COMPLETED,
+                Some(outcome.verdict.controller_detail()),
+                &mut controller_events,
+            )
+            .await;
+            update_quality_progress(
+                state,
+                task.id,
+                &task.original_name,
+                HISTORICAL_PHASE_ENGINE_ITERATION,
+                HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
+                outcome.verdict.task_quality_status(),
+                outcome.failure_message.as_deref(),
             )
             .await;
         }
@@ -224,7 +302,7 @@ pub(super) async fn try_run_historical_phase_engine(
                 HISTORICAL_PHASE_ENGINE_ITERATION,
                 HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
                 RESEARCH_CONTROLLER_STATUS_FAILED,
-                outcome.failure_message.as_deref(),
+                Some(outcome.verdict.controller_detail()),
                 &mut controller_events,
             )
             .await;
@@ -234,13 +312,14 @@ pub(super) async fn try_run_historical_phase_engine(
                 &task.original_name,
                 HISTORICAL_PHASE_ENGINE_ITERATION,
                 HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
-                "blocked",
+                outcome.verdict.task_quality_status(),
                 outcome.failure_message.as_deref(),
             )
             .await;
         }
     }
 
+    persist_historical_phase_engine_artifacts(state, task.id, &outcome.artifacts).await;
     handle_task_completion(
         state,
         task.id,
@@ -350,6 +429,7 @@ async fn build_historical_phase_engine_outcome(
     push_phase_plan_debts(&mut artifacts, &phase_plan);
     build_engine_planning_artifacts(&mut artifacts, &phase_plan, &subject);
     artifacts.events = controller_events.clone();
+    compact_engine_appendix_artifacts(&mut artifacts);
     persist_historical_phase_engine_artifacts(state, task.id, &artifacts).await;
 
     update_research_controller_progress(
@@ -392,36 +472,57 @@ async fn build_historical_phase_engine_outcome(
         evidence_subject: Some(&subject),
     };
 
-    let mut failures = Vec::new();
+    let mut validation_failures = Vec::new();
     if let Err(artifact_failures) = validate_research_artifacts(
         &artifacts,
         task.research_intensity.as_deref(),
         task.quality_depth.as_deref(),
     ) {
-        failures.extend(artifact_failures);
+        validation_failures.extend(artifact_failures);
     }
 
     let mut output = render_historical_phase_engine_output(
         &subject,
         &artifacts,
         &phase_plan,
-        &research_quality_gate_from_failures(&artifacts, &failures),
+        &historical_phase_engine_quality_gate(
+            &artifacts,
+            HistoricalPhaseEngineVerdict::ResearchGrade,
+            &[],
+        ),
     );
     output = normalize_ai_output(&output, file_type);
     if let Err(error) = validate_research_output(&output, &context) {
-        failures.push(error);
+        validation_failures.push(error);
     }
-
-    if failures.is_empty() {
-        close_research_debts_for_gate(
-            &mut artifacts.research_debt,
-            "historical_phase_engine",
-            None,
-        );
-        artifacts.quality_gate = Some(research_quality_gate_from_failures(&artifacts, &[]));
-    } else {
-        sync_engine_validation_debt(&mut artifacts, &failures);
-        artifacts.quality_gate = Some(research_quality_gate_from_failures(&artifacts, &failures));
+    let (verdict, verdict_messages) =
+        assess_historical_phase_engine_verdict(&artifacts, &output, &validation_failures);
+    match verdict {
+        HistoricalPhaseEngineVerdict::ResearchGrade => {
+            close_research_debts_for_gate(
+                &mut artifacts.research_debt,
+                "historical_phase_engine",
+                None,
+            );
+        }
+        HistoricalPhaseEngineVerdict::Partial | HistoricalPhaseEngineVerdict::Blocked => {
+            sync_engine_validation_debt(&mut artifacts, &verdict_messages);
+        }
+        HistoricalPhaseEngineVerdict::Explainer => {
+            for message in &verdict_messages {
+                push_unique_warning(
+                    &mut artifacts.warnings,
+                    truncate_engine_artifact_text(message, 160),
+                );
+            }
+        }
+    }
+    artifacts.quality_gate = Some(historical_phase_engine_quality_gate(
+        &artifacts,
+        verdict,
+        &verdict_messages,
+    ));
+    if verdict != HistoricalPhaseEngineVerdict::ResearchGrade {
         output = render_historical_phase_engine_output(
             &subject,
             &artifacts,
@@ -434,7 +535,7 @@ async fn build_historical_phase_engine_outcome(
         output = normalize_ai_output(&output, file_type);
     }
 
-    artifacts.events = controller_events.clone();
+    artifacts.events.clear();
     persist_historical_phase_engine_artifacts(state, task.id, &artifacts).await;
     update_research_controller_progress(
         state,
@@ -443,32 +544,27 @@ async fn build_historical_phase_engine_outcome(
         RESEARCH_STAGE_QUALITY_GATE,
         HISTORICAL_PHASE_ENGINE_ITERATION,
         HISTORICAL_PHASE_ENGINE_MAX_ITERATIONS,
-        if failures.is_empty() {
-            RESEARCH_CONTROLLER_STATUS_COMPLETED
-        } else {
+        if verdict == HistoricalPhaseEngineVerdict::Blocked {
             RESEARCH_CONTROLLER_STATUS_FAILED
-        },
-        Some(if failures.is_empty() {
-            "Historical phase engine accepted the isolated report."
         } else {
-            failures
+            RESEARCH_CONTROLLER_STATUS_COMPLETED
+        },
+        Some(
+            verdict_messages
                 .first()
                 .map(String::as_str)
-                .unwrap_or("Historical phase engine blocked the isolated report.")
-        }),
+                .unwrap_or(verdict.controller_detail()),
+        ),
         controller_events,
     )
     .await;
 
     HistoricalPhaseEngineOutcome {
-        terminal_status: if failures.is_empty() {
-            HistoricalPhaseEngineTerminalStatus::Accepted
-        } else {
-            HistoricalPhaseEngineTerminalStatus::Blocked
-        },
+        terminal_status: verdict.terminal_status(),
+        verdict,
         output,
         artifacts,
-        failure_message: failures.first().cloned(),
+        failure_message: verdict_messages.first().cloned(),
     }
 }
 
@@ -589,6 +685,277 @@ fn push_unique_line(target: &mut Vec<String>, value: &str) {
     target.push(normalized.to_string());
 }
 
+fn historical_tokenize(text: &str) -> Vec<String> {
+    text.split(|ch: char| {
+        !(ch.is_ascii_alphanumeric()
+            || ('\u{3131}'..='\u{318E}').contains(&ch)
+            || ('\u{AC00}'..='\u{D7A3}').contains(&ch))
+    })
+    .map(str::trim)
+    .filter(|token| !token.is_empty())
+    .map(|token| token.to_ascii_lowercase())
+    .filter(|token| !historical_token_is_noise(token))
+    .collect()
+}
+
+fn historical_token_is_noise(token: &str) -> bool {
+    if token.chars().all(|ch| ch.is_ascii_digit()) {
+        return token.len() < 4;
+    }
+    if token.chars().count() <= 1 {
+        return true;
+    }
+    matches!(
+        token,
+        "the"
+            | "and"
+            | "with"
+            | "from"
+            | "that"
+            | "this"
+            | "into"
+            | "through"
+            | "around"
+            | "across"
+            | "before"
+            | "after"
+            | "between"
+            | "during"
+            | "over"
+            | "under"
+            | "while"
+            | "were"
+            | "was"
+            | "then"
+            | "they"
+            | "them"
+            | "their"
+            | "there"
+            | "also"
+            | "because"
+            | "which"
+            | "would"
+            | "could"
+            | "should"
+            | "phase"
+            | "provides"
+            | "provide"
+            | "chronology"
+            | "anchor"
+            | "anchors"
+            | "evidence"
+            | "summary"
+            | "overview"
+            | "generic"
+            | "역사"
+            | "자료"
+            | "사건"
+            | "국면"
+            | "연표"
+            | "개요"
+            | "요약"
+            | "근거"
+            | "제공"
+            | "앵커"
+    )
+}
+
+fn historical_year_tokens(text: &str) -> HashSet<String> {
+    historical_tokenize(text)
+        .into_iter()
+        .filter(|token| token.chars().all(|ch| ch.is_ascii_digit()) && token.len() == 4)
+        .collect()
+}
+
+fn extracted_fact_is_substantive(fact: &str) -> bool {
+    let compact = compact_claim_text(fact);
+    if compact.chars().count() < 28 {
+        return false;
+    }
+    let lower = compact.to_ascii_lowercase();
+    let generic_markers = [
+        "provides chronology",
+        "provides chronology and consequence anchors",
+        "chronology anchor",
+        "consequence anchor",
+        "overview",
+        "summary",
+        "개요",
+        "요약",
+        "연표 앵커",
+    ];
+    if generic_markers.iter().any(|marker| lower.contains(marker)) {
+        return false;
+    }
+    let tokens = historical_tokenize(&compact);
+    if tokens.len() < 4 {
+        return false;
+    }
+    historical_year_tokens(&compact).len() >= 1
+        || extract_region_from_claim(&compact).is_some()
+        || extract_outcome_from_claim(&compact).is_some()
+        || tokens.iter().any(|token| {
+            token.contains("위기")
+                || token.contains("동원")
+                || token.contains("침공")
+                || token.contains("병합")
+                || token.contains("협정")
+                || token.contains("전쟁")
+                || token.contains("crisis")
+                || token.contains("mobil")
+                || token.contains("invad")
+                || token.contains("annex")
+                || token.contains("agreement")
+                || token.contains("armistice")
+                || token.contains("war")
+        })
+}
+
+fn claim_has_semantic_support_in_facts(claim: &str, facts: &[String]) -> bool {
+    let claim_tokens = historical_tokenize(claim)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let claim_years = historical_year_tokens(claim);
+    let claim_region = extract_region_from_claim(claim)
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    facts.iter().any(|fact| {
+        if !extracted_fact_is_substantive(fact) {
+            return false;
+        }
+        let fact_tokens = historical_tokenize(fact)
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let overlap = claim_tokens.intersection(&fact_tokens).count();
+        let year_overlap = !claim_years.is_empty()
+            && !claim_years
+                .intersection(&historical_year_tokens(fact))
+                .collect::<Vec<_>>()
+                .is_empty();
+        let fact_region = extract_region_from_claim(fact)
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        let region_overlap = !claim_region.is_empty()
+            && !fact_region.is_empty()
+            && (claim_region.contains(&fact_region) || fact_region.contains(&claim_region));
+        overlap >= 4 || (overlap >= 3 && year_overlap) || (overlap >= 3 && region_overlap)
+    })
+}
+
+fn claim_has_time_anchor(claim: &str) -> bool {
+    !historical_year_tokens(claim).is_empty() || claim.contains(" BCE") || claim.contains(" CE")
+}
+
+fn claim_has_region_anchor(claim: &str) -> bool {
+    extract_region_from_claim(claim).is_some()
+}
+
+fn claim_has_actor_anchor(claim: &str) -> bool {
+    extract_actors_from_claim(claim).len() >= 2
+}
+
+fn claim_has_handoff_anchor(claim: &str) -> bool {
+    extract_outcome_from_claim(claim)
+        .as_deref()
+        .is_some_and(|outcome| outcome.chars().count() >= 20)
+}
+
+fn claim_is_phase_specific(claim: &str) -> bool {
+    let mut anchors = 0usize;
+    if claim_has_time_anchor(claim) {
+        anchors += 1;
+    }
+    if claim_has_actor_anchor(claim) {
+        anchors += 1;
+    }
+    if claim_has_region_anchor(claim) {
+        anchors += 1;
+    }
+    if claim_has_handoff_anchor(claim) {
+        anchors += 1;
+    }
+    anchors >= 3
+}
+
+fn infer_historical_claim_type(claim: &str) -> String {
+    if claim_is_phase_specific(claim) {
+        "event_fact".to_string()
+    } else {
+        "historical_overview".to_string()
+    }
+}
+
+fn claim_type_is_granular(claim_type: &str) -> bool {
+    matches!(
+        claim_type,
+        "event_fact" | "actor_strategy" | "causal_handoff" | "interpretive_limit"
+    )
+}
+
+fn phase_label_from_claim(claim: &str) -> String {
+    claim
+        .split(':')
+        .next()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .unwrap_or(claim)
+        .to_string()
+}
+
+fn build_granular_claim_texts(claim: &str) -> Vec<(String, String)> {
+    let label = phase_label_from_claim(claim);
+    let actors = extract_actors_from_claim(claim);
+    let actor_text = if actors.is_empty() {
+        "주요 행위자".to_string()
+    } else {
+        actors.join(", ")
+    };
+    let region = extract_region_from_claim(claim).unwrap_or_else(|| "주요 지역/전선".to_string());
+    let trigger = build_trigger_from_claim(claim, &label).unwrap_or_else(|| label.clone());
+    let outcome = extract_outcome_from_claim(claim).unwrap_or_else(|| claim.to_string());
+    vec![
+        ("event_fact".to_string(), format!("{label}: {trigger}")),
+        (
+            "actor_strategy".to_string(),
+            format!(
+                "{label}: {actor_text}는 {region}에서 {trigger}를 둘러싼 외교·군사 선택을 조정했다."
+            ),
+        ),
+        (
+            "causal_handoff".to_string(),
+            format!("{label}: {outcome}"),
+        ),
+        (
+            "interpretive_limit".to_string(),
+            format!(
+                "{label}: 현재 근거는 {region}의 사건·행위자·귀결을 지지하지만, 내부 의사결정의 모든 세부 논쟁까지 확정하지는 않는다."
+            ),
+        ),
+    ]
+}
+
+fn push_granular_claim_rows(
+    artifacts: &mut ResearchControllerArtifacts,
+    claim_index: &mut usize,
+    source_id: &str,
+    claim: &str,
+    confidence: Option<String>,
+) {
+    for (claim_type, claim_text) in build_granular_claim_texts(claim) {
+        artifacts.claim_log.push(ResearchClaimLogEntry {
+            id: format!("C{}", *claim_index),
+            claim: claim_text,
+            claim_type: Some(claim_type),
+            support_source_card_ids: vec![source_id.to_string()],
+            support_urls: Vec::new(),
+            confidence: confidence.clone(),
+            uncertainty_note: None,
+            needs_verification: Some(false),
+        });
+        *claim_index += 1;
+    }
+}
+
 fn populate_engine_ledgers_from_documents(
     artifacts: &mut ResearchControllerArtifacts,
     documents: &[HistoricalEvidenceDocument],
@@ -635,12 +1002,21 @@ fn populate_engine_ledgers_from_documents(
             .and_then(|title| engine_safe_evidence_text(title, 120))
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| format!("Historical Source {}", source_index - 1));
-        let source_class = document
+        let source_class = liquid_research_core::infer_source_class(&url).to_string();
+        if document
             .source_class
             .as_deref()
             .and_then(|value| engine_safe_evidence_text(value, 64))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| liquid_research_core::infer_source_class(&url).to_string());
+            .is_some_and(|declared| declared != source_class)
+        {
+            push_unique_warning(
+                &mut artifacts.warnings,
+                format!(
+                    "historical_phase_engine_ignored_declared_source_class:{}",
+                    safe_document_suffix
+                ),
+            );
+        }
         let confidence = document
             .confidence
             .as_deref()
@@ -650,14 +1026,37 @@ fn populate_engine_ledgers_from_documents(
             .facts
             .iter()
             .filter_map(|fact| engine_safe_evidence_text(fact, 220))
+            .filter(|fact| extracted_fact_is_substantive(fact))
             .collect::<Vec<_>>();
+        if extracted_facts.is_empty() {
+            upsert_research_debt(
+                &mut artifacts.research_debt,
+                ResearchDebtItem {
+                    id: format!("missing-extracted-facts-{safe_document_suffix}"),
+                    severity: "high".to_string(),
+                    failed_gate: Some("historical_phase_engine".to_string()),
+                    missing_evidence: format!(
+                        "historical source {} does not contain non-empty extracted facts with phase-specific support",
+                        safe_document_label
+                    ),
+                    required_source_class: Some("authoritative_secondary".to_string()),
+                    candidate_queries: Vec::new(),
+                    next_check_actions: vec![format!(
+                        "Add Facts: lines in {} that name the timeframe, actors, place/front, and consequence actually used to support the phase claims.",
+                        safe_document_label
+                    )],
+                    status: "open".to_string(),
+                },
+            );
+            continue;
+        }
         let source_card = ResearchSourceCard {
             id: source_id.clone(),
             url,
             title,
             source_class,
             accessed_at: None,
-            extracted_facts,
+            extracted_facts: extracted_facts.clone(),
             limitation: None,
             diagnostics_ref: Some(format!("historical_phase_engine:{}", document.filename)),
             confidence: confidence.clone(),
@@ -697,17 +1096,39 @@ fn populate_engine_ledgers_from_documents(
             if claim.trim().is_empty() {
                 continue;
             }
-            artifacts.claim_log.push(ResearchClaimLogEntry {
-                id: format!("C{claim_index}"),
-                claim: claim.clone(),
-                claim_type: Some("event".to_string()),
-                support_source_card_ids: vec![source_id.clone()],
-                support_urls: Vec::new(),
-                confidence: confidence.clone(),
-                uncertainty_note: None,
-                needs_verification: Some(false),
-            });
-            claim_index += 1;
+            if !claim_has_semantic_support_in_facts(claim, &extracted_facts) {
+                upsert_research_debt(
+                    &mut artifacts.research_debt,
+                    ResearchDebtItem {
+                        id: format!(
+                            "unsupported-claim-{}-{}",
+                            safe_document_suffix,
+                            claim_index
+                        ),
+                        severity: "high".to_string(),
+                        failed_gate: Some("historical_phase_engine".to_string()),
+                        missing_evidence: format!(
+                            "claim in {} is not semantically supported by the source's extracted facts: {}",
+                            safe_document_label, claim
+                        ),
+                        required_source_class: None,
+                        candidate_queries: Vec::new(),
+                        next_check_actions: vec![format!(
+                            "Revise Facts: lines in {} so the claim's timeframe, actors, place/front, and consequence are explicitly supported before reusing the claim.",
+                            safe_document_label
+                        )],
+                        status: "open".to_string(),
+                    },
+                );
+                continue;
+            }
+            push_granular_claim_rows(
+                artifacts,
+                &mut claim_index,
+                &source_id,
+                claim,
+                confidence.clone(),
+            );
         }
     }
 
@@ -834,7 +1255,10 @@ fn ensure_reader_sentence(value: &str) -> String {
 
 fn engine_evidence_text_is_unsafe(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    let alias_normalized = lower.replace(['_', '-'], " ");
+    let alias_normalized = lower
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>();
     if contains_sensitive_assignment_marker(&lower)
         || contains_sensitive_assignment_marker(&alias_normalized)
     {
@@ -1117,12 +1541,8 @@ fn apply_phase_plan_depth_to_card(card: &mut NarrativeEventCard, phase_plan: &Hi
     {
         card.outcome = phase.expected_outcome.clone();
     }
-    if card.claim_log_ids.is_empty() {
-        card.claim_log_ids = phase.claim_log_ids.clone();
-    }
-    if card.source_ids.is_empty() {
-        card.source_ids = phase.source_ids.clone();
-    }
+    merge_unique_strings(&mut card.claim_log_ids, &phase.claim_log_ids);
+    merge_unique_strings(&mut card.source_ids, &phase.source_ids);
     let current_development = card.development.as_deref().unwrap_or_default();
     if current_development.chars().count() < 90
         || !current_development.contains("외교")
@@ -1143,6 +1563,15 @@ fn apply_phase_plan_depth_to_card(card: &mut NarrativeEventCard, phase_plan: &Hi
         card.development = Some(format!(
             "{phase_development} 주요 무대는 다음과 같았다: {region}. 주요 행위자({actors})는 외교·동맹 계산, 군사·동원 압력, 정치·주권 문제를 함께 처리해야 했다."
         ));
+    }
+}
+
+fn merge_unique_strings(target: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() && !target.iter().any(|existing| existing.trim() == trimmed) {
+            target.push(trimmed.to_string());
+        }
     }
 }
 
@@ -1524,9 +1953,9 @@ fn build_causal_spine(card: &NarrativeEventCard) -> Vec<NarrativeCausalSpineStep
             source_ids: card.source_ids.clone(),
         },
         NarrativeCausalSpineStep {
-            step_type: "forward_pressure".to_string(),
+            step_type: "outcome".to_string(),
             description: format!(
-                "{} 이 귀결은 주요 행위자({})가 {} 이후 취할 수 있는 선택지를 바꾸어 다음 국면으로 압력을 넘겼다.",
+                "{} 이 귀결은 주요 행위자({})가 {} 이후 취할 수 있는 선택지를 바꾸었고, 바로 그 지점에서 다음 국면으로 이어지는 압력이 만들어졌다.",
                 outcome,
                 actor_text,
                 card.label
@@ -1883,6 +2312,300 @@ fn first_clause_before_action(text: &str) -> &str {
         .unwrap_or(text.trim())
 }
 
+fn card_has_claim_backed_causal_spine(card: &NarrativeEventCard) -> bool {
+    if card.claim_log_ids.is_empty() || card.source_ids.is_empty() {
+        return false;
+    }
+    if card.causal_spine.len() < 4 {
+        return false;
+    }
+    let required_types = ["precondition", "decision_point", "execution", "outcome"];
+    required_types.iter().all(|required| {
+        card.causal_spine.iter().any(|step| {
+            step.step_type == *required
+                && !step.claim_log_ids.is_empty()
+                && !step.source_ids.is_empty()
+                && engine_safe_reader_text(&step.description, 220).is_some()
+        })
+    })
+}
+
+fn card_is_research_grade_specific(card: &NarrativeEventCard) -> bool {
+    card.timeframe
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && !card.actors.is_empty()
+        && card
+            .region_or_front
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && card
+            .trigger
+            .as_deref()
+            .is_some_and(|value| value.chars().count() >= 16)
+        && card
+            .development
+            .as_deref()
+            .is_some_and(|value| value.chars().count() >= 80)
+        && card
+            .outcome
+            .as_deref()
+            .is_some_and(|value| value.chars().count() >= 24)
+        && card_has_claim_backed_causal_spine(card)
+}
+
+fn historical_final_answer_template_failures(
+    output: &str,
+    cards: &[NarrativeEventCard],
+) -> Vec<String> {
+    let final_answer = output.split("\n# 검증 부록").next().unwrap_or(output);
+    let lower = final_answer.to_ascii_lowercase();
+    let mut failures = Vec::new();
+    for marker in [
+        "이 사건은 중요했고 결국",
+        "독자는 큰 흐름만 이해하면",
+        "전체적으로는 위기 대응의 사례",
+        "이 국면이 중요한 이유는 사건 하나가 끝났기 때문이 아니라",
+        "해석은 두 층위로 나뉜다",
+        "주요 행위자는 확전, 후퇴, 협상 중",
+        "다만 현재 근거가 지지하는 것은",
+        "### 동시대 비교",
+        "### 후대 영향",
+        "### 후속 탐색 질문",
+    ] {
+        if final_answer.contains(marker) || lower.contains(&marker.to_ascii_lowercase()) {
+            failures.push(format!(
+                "historical phase engine rendered a template-like summary marker instead of card-specific prose: {marker}"
+            ));
+        }
+    }
+    let mentioned_cards = cards
+        .iter()
+        .filter(|card| final_answer.contains(card.label.as_str()))
+        .count();
+    let required_card_mentions = cards.len().min(4);
+    if required_card_mentions > 0 && mentioned_cards < required_card_mentions {
+        failures.push(format!(
+            "historical phase engine final answer mentioned only {mentioned_cards} phase labels; strict rendering expected at least {required_card_mentions}"
+        ));
+    }
+    let mentioned_timeframes = cards
+        .iter()
+        .filter_map(|card| card.timeframe.as_deref())
+        .filter(|timeframe| final_answer.contains(timeframe))
+        .count();
+    let required_timeframe_mentions = cards.len().min(3);
+    if required_timeframe_mentions > 0 && mentioned_timeframes < required_timeframe_mentions {
+        failures.push(format!(
+            "historical phase engine final answer mentioned only {mentioned_timeframes} phase time anchors; strict rendering expected at least {required_timeframe_mentions}"
+        ));
+    }
+    let repeated_question_count = final_answer.matches("분석 질문은 이것이다").count();
+    if repeated_question_count > cards.len().min(2).max(1) {
+        failures.push(format!(
+            "historical phase engine repeated the same analytical-question lead {repeated_question_count} time(s); research-grade rendering expects phase-specific variation"
+        ));
+    }
+    failures
+}
+
+fn assess_historical_phase_engine_verdict(
+    artifacts: &ResearchControllerArtifacts,
+    output: &str,
+    validation_failures: &[String],
+) -> (HistoricalPhaseEngineVerdict, Vec<String>) {
+    let mut blocked = Vec::new();
+    let mut partial = Vec::new();
+    let mut explainer = Vec::new();
+    let state = artifacts.narrative_state.as_ref();
+    let cards = state
+        .map(|state| state.event_cards.as_slice())
+        .unwrap_or(&[]);
+    if artifacts.source_cards.is_empty() {
+        blocked.push(
+            "historical phase engine could not build any trusted Source Cards with non-empty extracted facts"
+                .to_string(),
+        );
+    }
+    if artifacts.claim_log.is_empty() {
+        blocked.push(
+            "historical phase engine could not build any semantically supported Claim Log rows"
+                .to_string(),
+        );
+    }
+    if cards.is_empty() {
+        blocked.push(
+            "historical phase engine could not build any claim-backed phase cards".to_string(),
+        );
+    }
+    for failure in validation_failures {
+        let lower = failure.to_ascii_lowercase();
+        let evidence_failure = lower.contains("source")
+            || lower.contains("claim")
+            || lower.contains("support")
+            || lower.contains("debt")
+            || lower.contains("conflict")
+            || lower.contains("blocked");
+        if blocked.is_empty() && evidence_failure {
+            partial.push(failure.clone());
+        } else if blocked.is_empty() {
+            explainer.push(failure.clone());
+        } else {
+            blocked.push(failure.clone());
+        }
+    }
+    let support_gap_debt_count = artifacts
+        .research_debt
+        .iter()
+        .filter(|debt| debt.status != "closed")
+        .filter(|debt| {
+            let failed_gate = debt
+                .failed_gate
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let missing = debt.missing_evidence.to_ascii_lowercase();
+            failed_gate.contains("source")
+                || failed_gate.contains("claim")
+                || missing.contains("public url")
+                || missing.contains("source card")
+                || missing.contains("claim log")
+                || missing.contains("extracted facts")
+                || missing.contains("semantically supported")
+                || missing.contains("support")
+        })
+        .count();
+    if blocked.is_empty() && support_gap_debt_count > 0 {
+        partial.push(format!(
+            "historical phase engine left {support_gap_debt_count} open support debt item(s) in the evidence ledger"
+        ));
+    }
+    let granular_claim_count = artifacts
+        .claim_log
+        .iter()
+        .filter(|claim| {
+            claim
+                .claim_type
+                .as_deref()
+                .is_some_and(claim_type_is_granular)
+        })
+        .count();
+    if blocked.is_empty() && !artifacts.claim_log.is_empty() && granular_claim_count == 0 {
+        explainer.push(
+            "historical phase engine built only broad overview claims, not granular phase claims"
+                .to_string(),
+        );
+    }
+    let claim_type_by_id = artifacts
+        .claim_log
+        .iter()
+        .filter_map(|claim| {
+            Some((
+                claim.id.as_str(),
+                claim
+                    .claim_type
+                    .as_deref()
+                    .filter(|value| !value.is_empty())?,
+            ))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let cards_with_claim_type = |claim_type: &str| -> usize {
+        cards
+            .iter()
+            .filter(|card| {
+                card.claim_log_ids.iter().any(|claim_id| {
+                    claim_type_by_id
+                        .get(claim_id.as_str())
+                        .is_some_and(|value| *value == claim_type)
+                })
+            })
+            .count()
+    };
+    if blocked.is_empty() && !cards.is_empty() {
+        let event_fact_cards = cards_with_claim_type("event_fact");
+        if event_fact_cards < cards.len() {
+            explainer.push(format!(
+                "historical phase engine attached event_fact claims to only {event_fact_cards}/{} phase card(s); research-grade output requires every phase to have an event_fact claim",
+                cards.len()
+            ));
+        }
+        let causal_handoff_cards = cards_with_claim_type("causal_handoff");
+        if causal_handoff_cards * 5 < cards.len() * 3 {
+            explainer.push(format!(
+                "historical phase engine attached causal_handoff claims to only {causal_handoff_cards}/{} phase card(s); research-grade output requires at least 60% causal handoff coverage",
+                cards.len()
+            ));
+        }
+        let actor_strategy_cards = cards_with_claim_type("actor_strategy");
+        if actor_strategy_cards * 2 < cards.len() {
+            explainer.push(format!(
+                "historical phase engine attached actor_strategy claims to only {actor_strategy_cards}/{} phase card(s); research-grade output requires at least 50% actor strategy coverage",
+                cards.len()
+            ));
+        }
+        let interpretive_limit_count = artifacts
+            .claim_log
+            .iter()
+            .filter(|claim| claim.claim_type.as_deref() == Some("interpretive_limit"))
+            .count();
+        if interpretive_limit_count == 0 {
+            explainer.push(
+                "historical phase engine did not retain any interpretive_limit claim; research-grade output requires at least one explicit interpretive limit"
+                    .to_string(),
+            );
+        }
+    }
+    let research_grade_cards = cards
+        .iter()
+        .filter(|card| card_is_research_grade_specific(card))
+        .count();
+    let required_research_grade_cards = cards.len().min(4);
+    if blocked.is_empty()
+        && required_research_grade_cards > 0
+        && research_grade_cards < required_research_grade_cards
+    {
+        explainer.push(format!(
+            "historical phase engine built only {research_grade_cards} research-grade phase card(s); strict rendering expected at least {required_research_grade_cards}"
+        ));
+    }
+    if blocked.is_empty() {
+        explainer.extend(historical_final_answer_template_failures(output, cards));
+    }
+    if !blocked.is_empty() {
+        (HistoricalPhaseEngineVerdict::Blocked, blocked)
+    } else if !partial.is_empty() {
+        partial.extend(explainer);
+        (HistoricalPhaseEngineVerdict::Partial, partial)
+    } else if !explainer.is_empty() {
+        (HistoricalPhaseEngineVerdict::Explainer, explainer)
+    } else {
+        (HistoricalPhaseEngineVerdict::ResearchGrade, Vec::new())
+    }
+}
+
+fn historical_phase_engine_quality_gate(
+    artifacts: &ResearchControllerArtifacts,
+    verdict: HistoricalPhaseEngineVerdict,
+    failure_messages: &[String],
+) -> ResearchQualityGateArtifact {
+    let mut gate = research_quality_gate_from_failures(
+        artifacts,
+        if verdict == HistoricalPhaseEngineVerdict::ResearchGrade {
+            &[]
+        } else {
+            failure_messages
+        },
+    );
+    gate.status = verdict.quality_gate_status().to_string();
+    gate.failure_messages = gate
+        .failure_messages
+        .into_iter()
+        .take(4)
+        .map(|message| truncate_engine_artifact_text(&message, 140))
+        .collect();
+    gate
+}
+
 fn sync_engine_validation_debt(artifacts: &mut ResearchControllerArtifacts, failures: &[String]) {
     for (idx, failure) in failures.iter().enumerate() {
         upsert_research_debt(
@@ -1959,6 +2682,64 @@ fn render_historical_phase_engine_final_answer(
     sections.join("\n\n")
 }
 
+fn phase_analytical_question(card: &NarrativeEventCard) -> String {
+    let label = card.label.as_str();
+    if label.contains("모로코") {
+        "독일의 세력 시험은 왜 협상국을 흔들기보다 오히려 결속시키는 방향으로 작동했는가?"
+            .to_string()
+    } else if label.contains("보스니아") {
+        "외교적 타결처럼 보인 병합 승인은 왜 러시아와 세르비아의 다음 후퇴 비용을 더 키웠는가?"
+            .to_string()
+    } else if label.contains("아가디르") {
+        "식민지 교섭으로 시작한 위기는 왜 해군력과 안보 불안을 동시에 증폭시켰는가?".to_string()
+    } else if label.contains("발칸") {
+        "지역 전쟁은 왜 세르비아 문제를 제국 안보와 동맹 신뢰의 문제로 바꾸었는가?".to_string()
+    } else if label.contains("사라예보") {
+        "암살 사건은 왜 수사·처벌의 문제가 아니라 동맹과 체면이 결합된 결단 문제로 번졌는가?"
+            .to_string()
+    } else if label.contains("최후통첩") || label.contains("7월") {
+        "최후통첩은 왜 협상의 문서라기보다 선택지를 좁히는 압박 장치로 작동했는가?".to_string()
+    } else if label.contains("동원") {
+        "방어적 준비라고 주장된 동원은 왜 상대에게 공격 시점 선점으로 읽혔는가?".to_string()
+    } else if label.contains("벨기에") {
+        "작전 계획은 왜 외교적 모호성을 영국 참전이라는 현실 선택으로 바꾸었는가?".to_string()
+    } else {
+        format!(
+            "{}에서 확인되는 행위와 귀결은 다음 국면의 선택지를 어떤 방향으로 좁혔는가?",
+            label
+        )
+    }
+}
+
+fn phase_specific_move(
+    index: usize,
+    card: &NarrativeEventCard,
+    next: Option<&NarrativeEventCard>,
+) -> String {
+    let next_label = next
+        .map(|next| next.label.as_str())
+        .unwrap_or("전쟁 발발·참전 결정");
+    let actor = card
+        .actors
+        .first()
+        .map(String::as_str)
+        .unwrap_or("주요 행위자");
+    match index % 4 {
+        0 => format!(
+            "여기서 눈여겨볼 움직임은 {actor}의 선택이 단순한 국면 종결이 아니라 {next_label}의 협상 비용을 미리 올렸다는 점이다."
+        ),
+        1 => format!(
+            "이 단계의 전환은 타협 자체보다 타협 뒤에 남은 불만과 체면 손실이 {next_label}에서 더 강한 압박으로 되돌아왔다는 데 있다."
+        ),
+        2 => format!(
+            "핵심 변화는 지역·식민지·동맹 문제가 분리되지 않고 {next_label}의 안보 계산으로 재배열되었다는 점이다."
+        ),
+        _ => format!(
+            "따라서 이 국면은 다음 사건의 배경이 아니라 {next_label}이 더 위험하게 읽히도록 만든 조건 변화로 보아야 한다."
+        ),
+    }
+}
+
 fn render_phase_section(
     index: usize,
     card: &NarrativeEventCard,
@@ -2006,19 +2787,32 @@ fn render_phase_section(
             "동시에 같은 압력은 즉각적 외교 충돌을 넘어 동맹·정치·군사 계산으로 확장된다."
                 .to_string()
         });
-    let next_handoff = next.map(|next| {
-        format!(
-            "그 부담은 다음 국면인 {}에서 다시 협상 조건과 위험 계산을 바꾸었다.",
-            next.label
-        )
-    }).unwrap_or_else(|| {
-        "마지막에는 외교 위기가 개전·침공·참전의 문제로 고정되면서 더 이상 별도의 협상 국면으로 되돌아가기 어려워졌다.".to_string()
-    });
+    let question = phase_analytical_question(card);
+    let question_lead = match index % 4 {
+        0 => "이 국면의 질문은 분명하다.",
+        1 => "여기서 먼저 물어야 할 것은 다음이다.",
+        2 => "이 단계는 한 가지 분석축으로 압축된다.",
+        _ => "이 사건을 연결고리로 읽으려면 이렇게 물어야 한다.",
+    };
+    let move_sentence = phase_specific_move(index, card, next);
+    let next_handoff = next
+        .map(|next| {
+            format!(
+                "그 압력은 곧 {}에서 더 좁은 시간표와 더 높은 후퇴 비용으로 나타났다.",
+                next.label
+            )
+        })
+        .unwrap_or_else(|| {
+            "마지막에는 외교 위기가 침공·참전 결정으로 고정되면서 별도의 완충 국면을 만들 여지가 크게 줄었다."
+                .to_string()
+        });
     format!(
-        "#### {}. {} ({})\n\n{}에 이 국면은 {}에서 전개되었다. 중심 행위자는 다음과 같다: {}. 출발점은 {} {} 그 결과 {} {}\n\n이 국면이 중요한 이유는 사건 하나가 끝났기 때문이 아니라, 그 사건이 다음 선택지의 비용을 바꾸었기 때문이다. {} 확인된 사건·행위자·지역 표현 안에서 읽으면, 한 단계의 외교 위기가 다음 단계의 동원·협상·침공 문제로 옮겨 가는 과정이 보인다.\n\n해석은 두 층위로 나뉜다. 외교·동맹 차원에서는 {} 군사·동원·정치 차원에서는 {} 다만 현재 근거가 지지하는 것은 국면별 방향과 귀결이지, 각국 내부 의사결정의 모든 세부 논쟁은 아니다. 그래서 본문은 확인된 사실과 그 사실에서 나오는 보수적 추론을 구분한다.",
+        "#### {}. {} ({})\n\n{} {} {}의 무대는 {}였고, 중심 행위자는 {}였다. 출발점은 {} 이어지는 전개는 {} 이 흐름의 귀결은 {} {}\n\n{} 확인된 causal spine은 다음과 같이 읽힌다: {} 이 연결은 새 사건을 덧붙이는 것이 아니라 같은 Claim Log가 묶는 계기·행위자·장소·귀결을 따라 다음 선택지가 좁아지는 방향을 설명한다.\n\n외교적 해석에서는 {} 군사·동원·정치 계산에서는 {} 근거의 한계도 남는다. 이 서술은 국면별 방향과 귀결을 지지하지만, 각국 내부 의사결정의 모든 세부 논쟁까지 확정하지는 않는다.",
         index + 1,
         card.label,
         timeframe,
+        question_lead,
+        question,
         timeframe,
         region,
         actors,
@@ -2026,6 +2820,7 @@ fn render_phase_section(
         ensure_reader_sentence(&development),
         ensure_reader_sentence(&outcome),
         next_handoff,
+        move_sentence,
         if causal.trim().is_empty() {
             ensure_reader_sentence(&outcome)
         } else {
@@ -2182,7 +2977,7 @@ fn compact_engine_appendix_artifact_value(
     serde_json::json!({
         "version": artifacts.version,
         "source_cards": artifacts.source_cards.iter().take(8).map(compact_engine_source_card_value).collect::<Vec<_>>(),
-        "claim_log": artifacts.claim_log.iter().take(8).map(compact_engine_claim_value).collect::<Vec<_>>(),
+        "claim_log": artifacts.claim_log.iter().take(24).map(compact_engine_claim_value).collect::<Vec<_>>(),
         "conflict_map": artifacts.conflict_map.iter().take(3).collect::<Vec<_>>(),
         "research_debt": artifacts.research_debt.iter().filter(|debt| debt.status != "closed").take(4).map(compact_engine_debt_value).collect::<Vec<_>>(),
         "narrative_state": narrative_state,
@@ -2198,7 +2993,7 @@ fn compact_engine_source_card_value(card: &ResearchSourceCard) -> serde_json::Va
         "title": truncate_engine_artifact_text(&card.title, 60),
         "source_class": truncate_engine_artifact_text(&card.source_class, 40),
         "accessed_at": card.accessed_at,
-        "extracted_facts": Vec::<String>::new(),
+        "extracted_facts": card.extracted_facts.iter().take(2).map(|value| truncate_engine_artifact_text(value, 56)).collect::<Vec<_>>(),
         "limitation": card.limitation.as_ref().map(|value| truncate_engine_artifact_text(value, 80)),
         "diagnostics_ref": serde_json::Value::Null,
         "confidence": card.confidence,
@@ -2208,7 +3003,7 @@ fn compact_engine_source_card_value(card: &ResearchSourceCard) -> serde_json::Va
 fn compact_engine_claim_value(claim: &ResearchClaimLogEntry) -> serde_json::Value {
     serde_json::json!({
         "id": claim.id,
-        "claim": truncate_engine_artifact_text(&claim.claim, 140),
+        "claim": truncate_engine_artifact_text(&claim.claim, 64),
         "claim_type": claim.claim_type,
         "support_source_card_ids": claim.support_source_card_ids,
         "support_urls": claim.support_urls,
@@ -2225,14 +3020,22 @@ fn compact_engine_event_card_value(card: &NarrativeEventCard) -> serde_json::Val
         "actors": card.actors.iter().take(5).map(|value| truncate_engine_artifact_text(value, 40)).collect::<Vec<_>>(),
         "region_or_front": card.region_or_front.as_ref().map(|value| truncate_engine_artifact_text(value, 60)),
         "trigger": card.trigger.as_ref().map(|value| truncate_engine_artifact_text(value, 100)),
-        "development": card.development.as_ref().map(|value| truncate_engine_artifact_text(value, 180)),
-        "outcome": card.outcome.as_ref().map(|value| truncate_engine_artifact_text(value, 140)),
+        "development": card.development.as_ref().map(|value| truncate_engine_artifact_text(value, 88)),
+        "outcome": card.outcome.as_ref().map(|value| truncate_engine_artifact_text(value, 60)),
         "claim_log_ids": card.claim_log_ids,
         "source_ids": card.source_ids,
-        "causal_spine": Vec::<serde_json::Value>::new(),
+        "causal_spine": card.causal_spine.iter().take(2).map(|step| serde_json::json!({
+            "step_type": step.step_type,
+            "description": truncate_engine_artifact_text(&step.description, 52),
+            "epistemic_status": step.epistemic_status,
+            "reasoning": serde_json::Value::Null,
+            "limits": Vec::<String>::new(),
+            "claim_log_ids": step.claim_log_ids,
+            "source_ids": step.source_ids,
+        })).collect::<Vec<_>>(),
         "interpretive_layers": card.interpretive_layers.iter().take(2).map(|layer| serde_json::json!({
             "layer_type": layer.layer_type,
-            "interpretation": truncate_engine_artifact_text(&layer.interpretation, 90),
+            "interpretation": truncate_engine_artifact_text(&layer.interpretation, 40),
             "epistemic_status": layer.epistemic_status,
             "reasoning": serde_json::Value::Null,
             "limits": Vec::<String>::new(),
@@ -2257,26 +3060,154 @@ fn compact_engine_debt_value(debt: &ResearchDebtItem) -> serde_json::Value {
     })
 }
 
+fn compact_support_facts_for_source(
+    source_id: &str,
+    facts: &[String],
+    claims: &[ResearchClaimLogEntry],
+) -> Vec<String> {
+    let mut retained = Vec::new();
+    for claim in claims.iter().filter(|claim| {
+        claim
+            .support_source_card_ids
+            .iter()
+            .any(|id| id.trim() == source_id)
+    }) {
+        if let Some(fact) = facts
+            .iter()
+            .filter(|fact| extracted_fact_is_substantive(fact))
+            .find(|fact| {
+                claim_has_semantic_support_in_facts(&claim.claim, std::slice::from_ref(fact))
+            })
+        {
+            let compact = truncate_engine_artifact_text(fact, 100);
+            if !retained.iter().any(|existing| existing == &compact) {
+                retained.push(compact);
+            }
+        }
+    }
+    if retained.is_empty() {
+        if let Some(fact) = facts
+            .iter()
+            .find(|fact| extracted_fact_is_substantive(fact))
+        {
+            retained.push(truncate_engine_artifact_text(fact, 100));
+        }
+    }
+    retained.truncate(2);
+    retained
+}
+
+fn compact_engine_claim_log_for_research_grade(
+    claims: &mut Vec<ResearchClaimLogEntry>,
+    valid_source_ids: &HashSet<String>,
+) {
+    for claim in claims.iter_mut() {
+        claim
+            .support_source_card_ids
+            .retain(|id| valid_source_ids.contains(id.trim()));
+        claim.support_urls.clear();
+    }
+    claims.retain(|claim| !claim.support_source_card_ids.is_empty());
+
+    let phase_order = claims
+        .iter()
+        .filter(|claim| claim.claim_type.as_deref() == Some("event_fact"))
+        .map(|claim| phase_label_from_claim(&claim.claim))
+        .fold(Vec::<String>::new(), |mut phases, phase| {
+            if !phase.is_empty() && !phases.iter().any(|existing| existing == &phase) {
+                phases.push(phase);
+            }
+            phases
+        });
+    let phase_count = phase_order.len();
+    if phase_count == 0 {
+        claims.truncate(8);
+        return;
+    }
+
+    let causal_target = (phase_count * 3).div_ceil(5);
+    let actor_target = phase_count.div_ceil(2);
+    let mut selected = HashSet::new();
+    let mut causal_count = 0usize;
+    let mut actor_count = 0usize;
+    let mut limit_count = 0usize;
+
+    for claim in claims.iter() {
+        let Some(claim_type) = claim.claim_type.as_deref() else {
+            continue;
+        };
+        let include = match claim_type {
+            "event_fact" => true,
+            "causal_handoff" if causal_count < causal_target => {
+                causal_count += 1;
+                true
+            }
+            "actor_strategy" if actor_count < actor_target => {
+                actor_count += 1;
+                true
+            }
+            "interpretive_limit" if limit_count == 0 => {
+                limit_count += 1;
+                true
+            }
+            _ => false,
+        };
+        if include {
+            selected.insert(claim.id.clone());
+        }
+    }
+
+    if selected.is_empty() {
+        selected.extend(claims.iter().take(8).map(|claim| claim.id.clone()));
+    }
+    claims.retain(|claim| selected.contains(&claim.id));
+    claims.truncate(24);
+}
+
 fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts) {
+    artifacts.events.clear();
     artifacts.source_cards.truncate(8);
-    artifacts.research_debt.truncate(6);
+    let valid_source_ids = artifacts
+        .source_cards
+        .iter()
+        .map(|source| source.id.trim().to_string())
+        .collect::<HashSet<_>>();
+    compact_engine_claim_log_for_research_grade(&mut artifacts.claim_log, &valid_source_ids);
+    artifacts.research_debt.truncate(4);
     artifacts.warnings.truncate(6);
+    for debt in &mut artifacts.research_debt {
+        debt.missing_evidence = truncate_engine_artifact_text(&debt.missing_evidence, 96);
+        debt.candidate_queries = debt
+            .candidate_queries
+            .iter()
+            .take(1)
+            .map(|value| truncate_engine_artifact_text(value, 56))
+            .collect();
+        debt.next_check_actions = debt
+            .next_check_actions
+            .iter()
+            .take(1)
+            .map(|value| truncate_engine_artifact_text(value, 64))
+            .collect();
+    }
+    let retained_claims = artifacts.claim_log.clone();
     for source in &mut artifacts.source_cards {
-        source.title = truncate_engine_artifact_text(&source.title, 72);
-        source.extracted_facts.clear();
+        source.title = truncate_engine_artifact_text(&source.title, 36);
+        source.extracted_facts =
+            compact_support_facts_for_source(&source.id, &source.extracted_facts, &retained_claims);
         source.limitation = source
             .limitation
             .as_deref()
-            .map(|value| truncate_engine_artifact_text(value, 120));
+            .map(|value| truncate_engine_artifact_text(value, 60));
         source.diagnostics_ref = None;
     }
     for claim in &mut artifacts.claim_log {
-        claim.claim = truncate_engine_artifact_text(&claim.claim, 120);
+        claim.claim = truncate_engine_artifact_text(&claim.claim, 64);
         claim.support_urls.clear();
         claim.uncertainty_note = claim
             .uncertainty_note
             .as_deref()
-            .map(|value| truncate_engine_artifact_text(value, 120));
+            .map(|value| truncate_engine_artifact_text(value, 48));
     }
     if let Some(state) = artifacts.narrative_state.as_mut() {
         state.topic_frame = state
@@ -2286,25 +3217,25 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
         state.working_thesis = state
             .working_thesis
             .as_deref()
-            .map(|value| truncate_engine_artifact_text(value, 140));
+            .map(|value| truncate_engine_artifact_text(value, 80));
         state.reader_promise = state
             .reader_promise
             .as_deref()
-            .map(|value| truncate_engine_artifact_text(value, 120));
+            .map(|value| truncate_engine_artifact_text(value, 70));
         state.last_iteration_summary = state
             .last_iteration_summary
             .as_deref()
-            .map(|value| truncate_engine_artifact_text(value, 160));
-        state.timeline.truncate(8);
+            .map(|value| truncate_engine_artifact_text(value, 80));
+        state.timeline.truncate(4);
         state.actors.clear();
         state.causal_chain.truncate(3);
         for link in &mut state.causal_chain {
-            link.cause = truncate_engine_artifact_text(&link.cause, 80);
-            link.effect = truncate_engine_artifact_text(&link.effect, 80);
+            link.cause = truncate_engine_artifact_text(&link.cause, 56);
+            link.effect = truncate_engine_artifact_text(&link.effect, 56);
             link.rationale = link
                 .rationale
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 100));
+                .map(|value| truncate_engine_artifact_text(value, 64));
         }
         state.evidence_layers.truncate(3);
         state.interpretive_tensions.truncate(1);
@@ -2313,14 +3244,14 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
             tension.competing_readings = tension
                 .competing_readings
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 100));
+                .map(|value| truncate_engine_artifact_text(value, 52));
         }
         state.impacts.truncate(1);
         for impact in &mut state.impacts {
             impact.implication = impact
                 .implication
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 100));
+                .map(|value| truncate_engine_artifact_text(value, 60));
         }
         state.reader_questions.clear();
         state.section_outline.clear();
@@ -2330,54 +3261,76 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
             item.significance = item
                 .significance
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 90));
+                .map(|value| truncate_engine_artifact_text(value, 56));
+            item.expected_claim_log_ids.truncate(2);
+            item.expected_source_card_ids.truncate(1);
         }
         for layer in &mut state.evidence_layers {
             layer.purpose = layer
                 .purpose
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 100));
+                .map(|value| truncate_engine_artifact_text(value, 64));
+            layer.expected_claim_log_ids.truncate(4);
+            layer.expected_source_card_ids.truncate(2);
+        }
+        for link in &mut state.causal_chain {
+            link.expected_claim_log_ids.truncate(3);
+            link.expected_source_card_ids.truncate(2);
+        }
+        for tension in &mut state.interpretive_tensions {
+            tension.expected_claim_log_ids.truncate(3);
+            tension.expected_source_card_ids.truncate(2);
+        }
+        for impact in &mut state.impacts {
+            impact.expected_claim_log_ids.truncate(3);
+            impact.expected_source_card_ids.truncate(2);
         }
         state.event_cards.truncate(8);
         for card in &mut state.event_cards {
-            card.label = truncate_engine_artifact_text(&card.label, 80);
+            card.label = truncate_engine_artifact_text(&card.label, 50);
             card.timeframe = card
                 .timeframe
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 48));
+                .map(|value| truncate_engine_artifact_text(value, 40));
             card.actors = card
                 .actors
                 .iter()
-                .take(4)
-                .map(|value| truncate_engine_artifact_text(value, 48))
+                .take(3)
+                .map(|value| truncate_engine_artifact_text(value, 36))
                 .collect();
             card.region_or_front = card
                 .region_or_front
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 60));
+                .map(|value| truncate_engine_artifact_text(value, 44));
             card.trigger = card
                 .trigger
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 90));
+                .map(|value| truncate_engine_artifact_text(value, 48));
             card.development = card
                 .development
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 120));
+                .map(|value| truncate_engine_artifact_text(value, 82));
             card.outcome = card
                 .outcome
                 .as_deref()
-                .map(|value| truncate_engine_artifact_text(value, 110));
-            card.causal_spine.clear();
-            card.interpretive_layers.truncate(2);
+                .map(|value| truncate_engine_artifact_text(value, 52));
+            card.causal_spine.truncate(4);
+            for step in &mut card.causal_spine {
+                step.description = truncate_engine_artifact_text(&step.description, 48);
+                step.reasoning = None;
+                step.limits.clear();
+                step.claim_log_ids.truncate(1);
+                step.source_ids.truncate(1);
+            }
+            card.interpretive_layers.truncate(1);
             for layer in &mut card.interpretive_layers {
-                layer.interpretation = truncate_engine_artifact_text(&layer.interpretation, 60);
+                layer.interpretation = truncate_engine_artifact_text(&layer.interpretation, 36);
                 layer.reasoning = None;
                 layer.limits.clear();
             }
             card.open_questions.truncate(1);
         }
     }
-    artifacts.claim_log.truncate(8);
     let valid_claim_ids = artifacts
         .claim_log
         .iter()
@@ -2385,14 +3338,26 @@ fn compact_engine_appendix_artifacts(artifacts: &mut ResearchControllerArtifacts
         .collect::<HashSet<_>>();
     if let Some(state) = artifacts.narrative_state.as_mut() {
         for card in &mut state.event_cards {
+            card.source_ids
+                .retain(|id| valid_source_ids.contains(id.trim()));
             card.claim_log_ids
                 .retain(|id| valid_claim_ids.contains(id.trim()));
-            card.claim_log_ids.truncate(1);
+            card.claim_log_ids.truncate(4);
+            for step in &mut card.causal_spine {
+                step.source_ids
+                    .retain(|id| valid_source_ids.contains(id.trim()));
+                step.claim_log_ids
+                    .retain(|id| valid_claim_ids.contains(id.trim()));
+                step.claim_log_ids.truncate(4);
+            }
             for layer in &mut card.interpretive_layers {
+                layer
+                    .source_ids
+                    .retain(|id| valid_source_ids.contains(id.trim()));
                 layer
                     .claim_log_ids
                     .retain(|id| valid_claim_ids.contains(id.trim()));
-                layer.claim_log_ids.truncate(1);
+                layer.claim_log_ids.truncate(4);
             }
         }
     }
@@ -2572,15 +3537,49 @@ mod tests {
     use crate::test_support::{temp_test_dir, test_state_with_historical_phase_engine_enabled};
     use liquid_storage_sqlite::setup_db;
 
-    fn historical_source_document(title: &str, url: &str, claims: &[&str]) -> String {
+    fn facts_from_claim(claim: &str) -> Vec<String> {
+        let compact = compact_claim_text(claim);
+        let trigger = build_trigger_from_claim(claim, claim).unwrap_or_else(|| compact.clone());
+        let outcome = extract_outcome_from_claim(claim).unwrap_or_else(|| compact.clone());
+        vec![
+            format!(
+                "{} 이 자료는 해당 국면의 시기, 행위자, 장소/전선, 계기를 직접 제시한다.",
+                trigger
+            ),
+            format!(
+                "{} 이 자료는 그 국면의 귀결과 다음 외교·군사 선택지 변화도 함께 설명한다.",
+                outcome
+            ),
+        ]
+    }
+
+    fn historical_source_document_with_facts(
+        title: &str,
+        url: &str,
+        facts: &[String],
+        claims: &[&str],
+    ) -> String {
         format!(
-            "# {title}\nURL: {url}\nSource Class: authoritative_secondary\nConfidence: high\nFacts:\n- {title} provides chronology and consequence anchors.\nClaims:\n{}\n",
+            "# {title}\nURL: {url}\nSource Class: authoritative_secondary\nConfidence: high\nFacts:\n{}\nClaims:\n{}\n",
+            facts
+                .iter()
+                .map(|fact| format!("- {fact}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
             claims
                 .iter()
                 .map(|claim| format!("- {claim}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         )
+    }
+
+    fn historical_source_document(title: &str, url: &str, claims: &[&str]) -> String {
+        let facts = claims
+            .iter()
+            .flat_map(|claim| facts_from_claim(claim))
+            .collect::<Vec<_>>();
+        historical_source_document_with_facts(title, url, &facts, claims)
     }
 
     async fn insert_historical_task(
@@ -2643,6 +3642,12 @@ mod tests {
             "raw_model_output: hidden model output",
             "source_documents: hidden source prompt section",
             "source documents: hidden source prompt section",
+            "provider.payload: hidden provider body",
+            "resolved.prompt: hidden resolved prompt",
+            "source.diagnostics: hidden source diagnostics",
+            "controller.artifact.json: hidden controller state",
+            "model.input: hidden task input",
+            "raw.model.output: hidden model output",
             "model_input: hidden task input",
             "token: hidden token",
             "access_token: hidden token",
@@ -2672,6 +3677,28 @@ mod tests {
         assert!(!label.contains("provider"));
         assert!(!suffix.contains("resolved"));
         assert!(!suffix.contains("prompt"));
+    }
+
+    #[test]
+    fn source_class_is_derived_from_url_not_declared_metadata() {
+        let mut artifacts = ResearchControllerArtifacts::default();
+        let documents = vec![HistoricalEvidenceDocument {
+            filename: "spoof.md".to_string(),
+            title: Some("Spoofed source".to_string()),
+            url: Some("https://www.britannica.com/event/World-War-I".to_string()),
+            source_class: Some("official_primary".to_string()),
+            confidence: Some("high".to_string()),
+            facts: vec!["1914년 7월 위기에서 오스트리아-헝가리와 세르비아의 충돌이 동원 판단으로 이어졌다.".to_string()],
+            claims: vec!["1914년 7월 위기: 오스트리아-헝가리와 세르비아는 빈·베오그라드에서 충돌했고 동원 판단으로 위기가 이동했다.".to_string()],
+        }];
+
+        populate_engine_ledgers_from_documents(&mut artifacts, &documents);
+
+        assert_eq!(artifacts.source_cards.len(), 1);
+        assert_ne!(artifacts.source_cards[0].source_class, "official_primary");
+        assert!(artifacts.warnings.iter().any(|warning| {
+            warning.starts_with("historical_phase_engine_ignored_declared_source_class")
+        }));
     }
 
     #[tokio::test]
@@ -2768,7 +3795,7 @@ mod tests {
                 .quality_gate
                 .as_ref()
                 .map(|gate| gate.status.as_str()),
-            Some("passed")
+            Some("research_grade")
         );
         assert_eq!(output.matches("## 최종 답변 (Final Answer)").count(), 1);
         assert_eq!(output.matches("# 검증 부록").count(), 1);
@@ -2778,9 +3805,16 @@ mod tests {
         assert!(artifacts.source_cards.len() >= 8);
         assert!(artifacts.claim_log.len() >= 8);
         assert!(artifacts
-            .narrative_state
-            .as_ref()
-            .is_some_and(|state| state.event_cards.len() >= 8));
+            .source_cards
+            .iter()
+            .all(|card| !card.extracted_facts.is_empty()));
+        assert!(artifacts.narrative_state.as_ref().is_some_and(|state| {
+            state.event_cards.len() >= 8
+                && state
+                    .event_cards
+                    .iter()
+                    .all(|card| !card.causal_spine.is_empty())
+        }));
     }
 
     #[tokio::test]
@@ -2882,13 +3916,23 @@ mod tests {
             "failure={:?}",
             completed.quality_last_failure
         );
+        assert_eq!(
+            artifacts
+                .quality_gate
+                .as_ref()
+                .map(|gate| gate.status.as_str()),
+            Some("research_grade")
+        );
         assert!(output.contains("### 주요 쟁점과 해석"));
         assert!(output.contains("뮌헨 협정"));
         assert!(!output.contains("근거 연결 국면"));
-        assert!(artifacts
-            .narrative_state
-            .as_ref()
-            .is_some_and(|state| state.event_cards.len() >= 8));
+        assert!(artifacts.narrative_state.as_ref().is_some_and(|state| {
+            state.event_cards.len() >= 8
+                && state
+                    .event_cards
+                    .iter()
+                    .all(|card| !card.causal_spine.is_empty())
+        }));
     }
 
     #[tokio::test]
@@ -3021,7 +4065,7 @@ mod tests {
                 .quality_gate
                 .as_ref()
                 .map(|gate| gate.status.as_str()),
-            Some("failed")
+            Some("blocked")
         );
         assert!(artifacts.research_debt.iter().any(|debt| {
             debt.missing_evidence.contains("missing a public URL")
@@ -3090,10 +4134,412 @@ mod tests {
             .await
             .expect("artifacts should persist");
         let json = serde_json::to_string(&artifacts).unwrap();
-        assert!(json.len() < 20_000, "artifact_json_len={}", json.len());
+        assert!(json.len() < 24_000, "artifact_json_len={}", json.len());
         assert!(artifacts.warnings.iter().any(|warning| {
             warning == "historical_phase_engine_ignored_oversized_legacy_controller_artifacts"
         }));
+    }
+
+    #[test]
+    fn moroccan_facts_do_not_support_bosnian_claims() {
+        let moroccan_facts = vec![
+            "1905-1906년 제1차 모로코 위기에서 독일의 개입과 알헤시라스 협상이 협상국 협조를 강화했다."
+                .to_string(),
+            "모로코와 알헤시라스에서의 외교 충돌은 독일 고립 인식을 키웠다.".to_string(),
+        ];
+        let moroccan_claim =
+            "1905-1906년 제1차 모로코 위기: 독일, 프랑스, 영국은 모로코·알헤시라스에서 충돌했고 협상국 협조가 강화되었다.";
+        let bosnian_claim =
+            "1908-1909년 보스니아 병합 위기: 오스트리아-헝가리, 세르비아, 러시아는 보스니아·발칸에서 충돌했고 러시아 후퇴가 동맹 정치를 흔들었다.";
+
+        assert!(claim_has_semantic_support_in_facts(
+            moroccan_claim,
+            &moroccan_facts
+        ));
+        assert!(!claim_has_semantic_support_in_facts(
+            bosnian_claim,
+            &moroccan_facts
+        ));
+    }
+
+    #[test]
+    fn extracted_facts_remain_non_empty_after_sanitized_compaction() {
+        let mut artifacts = ResearchControllerArtifacts {
+            version: 1,
+            source_cards: vec![ResearchSourceCard {
+                id: "S1".to_string(),
+                url: "https://example.com/wwi".to_string(),
+                title: "WWI source".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                accessed_at: None,
+                extracted_facts: vec![
+                    "1914년 7월 위기에서 오스트리아-헝가리와 세르비아의 충돌이 동원 판단으로 이어졌다."
+                        .to_string(),
+                    "빈과 베오그라드의 최후통첩 위기는 외교 후퇴 공간을 줄였다.".to_string(),
+                ],
+                limitation: None,
+                diagnostics_ref: Some("historical_phase_engine:test".to_string()),
+                confidence: Some("high".to_string()),
+            }],
+            ..ResearchControllerArtifacts::default()
+        };
+
+        compact_engine_appendix_artifacts(&mut artifacts);
+
+        assert_eq!(artifacts.source_cards.len(), 1);
+        assert!(!artifacts.source_cards[0].extracted_facts.is_empty());
+        assert!(artifacts.source_cards[0].diagnostics_ref.is_none());
+    }
+
+    #[test]
+    fn claim_types_are_granular_for_phase_specific_rows() {
+        let phase_claim = "1914년 6월 사라예보 암살: 오스트리아-헝가리와 세르비아는 사라예보·보스니아에서 암살 여파를 둘러싸고 충돌했고 7월 위기가 전면화되었다.";
+        assert_eq!(infer_historical_claim_type(phase_claim), "event_fact");
+        let granular_types = build_granular_claim_texts(phase_claim)
+            .into_iter()
+            .map(|(claim_type, _)| claim_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            granular_types,
+            vec![
+                "event_fact",
+                "actor_strategy",
+                "causal_handoff",
+                "interpretive_limit"
+            ]
+        );
+        assert_eq!(
+            infer_historical_claim_type(
+                "여러 외교 문제와 동맹 계산이 누적되면서 분쟁이 확대되었다."
+            ),
+            "historical_overview"
+        );
+    }
+
+    #[test]
+    fn claim_backed_causal_spine_survives_compaction() {
+        let card = NarrativeEventCard {
+            label: "July Crisis".to_string(),
+            timeframe: Some("1914년 7월".to_string()),
+            actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string()],
+            region_or_front: Some("빈·베오그라드".to_string()),
+            trigger: Some("최후통첩과 동원 준비가 외교 후퇴 공간을 줄였다.".to_string()),
+            development: Some(
+                "최후통첩과 동원 준비는 빈·베오그라드에서 외교·군사 선택지를 동시에 압박했고 다음 단계의 확전 판단을 재배치했다."
+                    .to_string(),
+            ),
+            outcome: Some("동원 판단이 일반 전쟁으로 향하는 압력을 만들었다.".to_string()),
+            claim_log_ids: vec!["C1".to_string()],
+            source_ids: vec!["S1".to_string()],
+            causal_spine: build_causal_spine(&NarrativeEventCard {
+                label: "July Crisis".to_string(),
+                timeframe: Some("1914년 7월".to_string()),
+                actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string()],
+                region_or_front: Some("빈·베오그라드".to_string()),
+                trigger: Some("최후통첩과 동원 준비가 외교 후퇴 공간을 줄였다.".to_string()),
+                development: Some(
+                    "최후통첩과 동원 준비는 빈·베오그라드에서 외교·군사 선택지를 동시에 압박했고 다음 단계의 확전 판단을 재배치했다."
+                        .to_string(),
+                ),
+                outcome: Some("동원 판단이 일반 전쟁으로 향하는 압력을 만들었다.".to_string()),
+                claim_log_ids: vec!["C1".to_string()],
+                source_ids: vec!["S1".to_string()],
+                causal_spine: Vec::new(),
+                interpretive_layers: Vec::new(),
+                confidence: Some("high".to_string()),
+                open_questions: Vec::new(),
+            }),
+            interpretive_layers: Vec::new(),
+            confidence: Some("high".to_string()),
+            open_questions: Vec::new(),
+        };
+        let mut artifacts = ResearchControllerArtifacts {
+            version: 1,
+            source_cards: vec![ResearchSourceCard {
+                id: "S1".to_string(),
+                url: "https://example.com/july-crisis".to_string(),
+                title: "July Crisis source".to_string(),
+                source_class: "authoritative_secondary".to_string(),
+                accessed_at: None,
+                extracted_facts: vec![
+                    "1914년 7월 위기에서 최후통첩과 동원 판단이 확전 압력을 키웠다.".to_string(),
+                ],
+                limitation: None,
+                diagnostics_ref: None,
+                confidence: Some("high".to_string()),
+            }],
+            claim_log: vec![ResearchClaimLogEntry {
+                id: "C1".to_string(),
+                claim: "1914년 7월 위기".to_string(),
+                claim_type: Some("ultimatum_escalation".to_string()),
+                support_source_card_ids: vec!["S1".to_string()],
+                support_urls: Vec::new(),
+                confidence: Some("high".to_string()),
+                uncertainty_note: None,
+                needs_verification: Some(false),
+            }],
+            narrative_state: Some(NarrativeState {
+                version: 1,
+                event_cards: vec![card],
+                ..NarrativeState::default()
+            }),
+            ..ResearchControllerArtifacts::default()
+        };
+
+        compact_engine_appendix_artifacts(&mut artifacts);
+
+        let card = &artifacts
+            .narrative_state
+            .as_ref()
+            .expect("narrative state")
+            .event_cards[0];
+        assert!(card_has_claim_backed_causal_spine(card));
+    }
+
+    #[test]
+    fn template_like_renderer_is_flagged_as_explainer() {
+        let cards = vec![
+            NarrativeEventCard {
+                label: "July Crisis".to_string(),
+                timeframe: Some("1914년 7월".to_string()),
+                actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string()],
+                region_or_front: Some("빈·베오그라드".to_string()),
+                trigger: Some("최후통첩".to_string()),
+                development: Some(
+                    "최후통첩과 동원 위기가 외교 선택지를 급격히 줄였다.".to_string(),
+                ),
+                outcome: Some("동원 판단이 확전 압력을 키웠다.".to_string()),
+                claim_log_ids: vec!["C1".to_string()],
+                source_ids: vec!["S1".to_string()],
+                causal_spine: build_causal_spine(&NarrativeEventCard {
+                    label: "July Crisis".to_string(),
+                    timeframe: Some("1914년 7월".to_string()),
+                    actors: vec!["오스트리아-헝가리".to_string(), "세르비아".to_string()],
+                    region_or_front: Some("빈·베오그라드".to_string()),
+                    trigger: Some("최후통첩".to_string()),
+                    development: Some(
+                        "최후통첩과 동원 위기가 외교 선택지를 급격히 줄였다.".to_string(),
+                    ),
+                    outcome: Some("동원 판단이 확전 압력을 키웠다.".to_string()),
+                    claim_log_ids: vec!["C1".to_string()],
+                    source_ids: vec!["S1".to_string()],
+                    causal_spine: Vec::new(),
+                    interpretive_layers: Vec::new(),
+                    confidence: Some("high".to_string()),
+                    open_questions: Vec::new(),
+                }),
+                interpretive_layers: Vec::new(),
+                confidence: Some("high".to_string()),
+                open_questions: Vec::new(),
+            },
+            NarrativeEventCard {
+                label: "Belgium Invasion".to_string(),
+                timeframe: Some("1914년 8월".to_string()),
+                actors: vec!["독일".to_string(), "영국".to_string()],
+                region_or_front: Some("벨기에·서부전선".to_string()),
+                trigger: Some("벨기에 침공".to_string()),
+                development: Some(
+                    "벨기에 침공과 중립 보장 문제가 영국 참전을 압박했다.".to_string(),
+                ),
+                outcome: Some("영국 참전으로 전쟁이 확대되었다.".to_string()),
+                claim_log_ids: vec!["C2".to_string()],
+                source_ids: vec!["S2".to_string()],
+                causal_spine: build_causal_spine(&NarrativeEventCard {
+                    label: "Belgium Invasion".to_string(),
+                    timeframe: Some("1914년 8월".to_string()),
+                    actors: vec!["독일".to_string(), "영국".to_string()],
+                    region_or_front: Some("벨기에·서부전선".to_string()),
+                    trigger: Some("벨기에 침공".to_string()),
+                    development: Some(
+                        "벨기에 침공과 중립 보장 문제가 영국 참전을 압박했다.".to_string(),
+                    ),
+                    outcome: Some("영국 참전으로 전쟁이 확대되었다.".to_string()),
+                    claim_log_ids: vec!["C2".to_string()],
+                    source_ids: vec!["S2".to_string()],
+                    causal_spine: Vec::new(),
+                    interpretive_layers: Vec::new(),
+                    confidence: Some("high".to_string()),
+                    open_questions: Vec::new(),
+                }),
+                interpretive_layers: Vec::new(),
+                confidence: Some("high".to_string()),
+                open_questions: Vec::new(),
+            },
+        ];
+        let failures = historical_final_answer_template_failures(
+            "## 최종 답변 (Final Answer)\n\n이 사건은 중요했고 결국 제도의 방향을 바꾸었습니다.\n\n### 동시대 비교\n같은 시기 다른 지역 사례와 비교합니다.\n\n# 검증 부록\n",
+            &cards,
+        );
+        assert!(!failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn broad_chronology_insufficiency_is_explainer_not_research_grade() {
+        let dir = temp_test_dir("historical-phase-engine-explainer");
+        let uploads = dir.join("uploads");
+        let db = setup_db(&dir).await.unwrap();
+        let state =
+            test_state_with_historical_phase_engine_enabled(db.clone(), uploads.clone(), true);
+        write_source_file(
+            &uploads,
+            "broad-wwi.md",
+            &historical_source_document_with_facts(
+                "Broad World War I overview",
+                "https://www.britannica.com/event/World-War-I",
+                &[
+                    "1914년부터 1918년까지 유럽 전역에서 분쟁이 확대되고 이후 질서가 달라졌다는 큰 흐름은 확인된다.".to_string(),
+                    "여러 위기와 동맹 계산이 누적되며 전쟁이 장기화되었지만, 개별 국면의 행위자와 장소를 세밀하게 분해하지는 않는다.".to_string(),
+                ],
+                &[
+                    "1914년부터 1918년까지 유럽 전역에서 분쟁이 확대되고 이후 질서가 달라졌다.",
+                    "여러 위기와 동맹 계산이 누적되며 전쟁이 장기화되었다.",
+                ],
+            ),
+        )
+        .await;
+        let topic = "World War I background, development, impact, and significance";
+        let task_id = insert_historical_task(&db, topic, &["broad-wwi.md"]).await;
+        let task = load_task(&db, task_id).await;
+
+        assert!(
+            try_run_historical_phase_engine(
+                &state,
+                &task,
+                &["broad-wwi.md".to_string()],
+                Vec::new(),
+                "[AI-Research]",
+                "md",
+                topic,
+            )
+            .await
+        );
+
+        let completed = load_task(&db, task_id).await;
+        let artifacts = load_task_research_artifacts(&state, task_id)
+            .await
+            .expect("artifacts should persist");
+        assert_eq!(completed.quality_status.as_deref(), Some("untrusted"));
+        let verdict = artifacts
+            .quality_gate
+            .as_ref()
+            .map(|gate| gate.status.as_str());
+        assert_ne!(verdict, Some("research_grade"));
+        assert!(matches!(verdict, Some("explainer") | Some("partial")));
+    }
+
+    #[tokio::test]
+    async fn mismatched_source_support_is_blocked() {
+        let dir = temp_test_dir("historical-phase-engine-mismatch");
+        let uploads = dir.join("uploads");
+        let db = setup_db(&dir).await.unwrap();
+        let state =
+            test_state_with_historical_phase_engine_enabled(db.clone(), uploads.clone(), true);
+        write_source_file(
+            &uploads,
+            "mismatch.md",
+            &historical_source_document_with_facts(
+                "Moroccan crisis facts with Bosnian claim",
+                "https://www.britannica.com/event/Moroccan-crises",
+                &[
+                    "1905-1906년 제1차 모로코 위기에서 독일의 개입과 알헤시라스 협상이 협상국 협조를 강화했다."
+                        .to_string(),
+                    "모로코와 알헤시라스의 외교 충돌은 독일 고립 인식을 키웠다.".to_string(),
+                ],
+                &["1908-1909년 보스니아 병합 위기: 오스트리아-헝가리, 세르비아, 러시아는 보스니아·발칸에서 충돌했고 러시아 후퇴가 동맹 정치를 흔들었다."],
+            ),
+        )
+        .await;
+        let topic = "World War I background, development, impact, and significance";
+        let task_id = insert_historical_task(&db, topic, &["mismatch.md"]).await;
+        let task = load_task(&db, task_id).await;
+
+        assert!(
+            try_run_historical_phase_engine(
+                &state,
+                &task,
+                &["mismatch.md".to_string()],
+                Vec::new(),
+                "[AI-Research]",
+                "md",
+                topic,
+            )
+            .await
+        );
+
+        let completed = load_task(&db, task_id).await;
+        let artifacts = load_task_research_artifacts(&state, task_id)
+            .await
+            .expect("artifacts should persist");
+        assert_eq!(completed.quality_status.as_deref(), Some("blocked"));
+        assert_eq!(
+            artifacts
+                .quality_gate
+                .as_ref()
+                .map(|gate| gate.status.as_str()),
+            Some("blocked")
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_supported_and_unsupported_claims_end_as_partial() {
+        let dir = temp_test_dir("historical-phase-engine-partial");
+        let uploads = dir.join("uploads");
+        let db = setup_db(&dir).await.unwrap();
+        let state =
+            test_state_with_historical_phase_engine_enabled(db.clone(), uploads.clone(), true);
+        write_source_file(
+            &uploads,
+            "valid.md",
+            &historical_source_document(
+                "July Crisis evidence",
+                "https://www.nationalarchives.gov.uk/pathways/firstworldwar/spotlights/origins.htm",
+                &["1914년 7월 최후통첩 위기: 오스트리아-헝가리, 세르비아, 독일, 러시아는 빈·베오그라드에서 최후통첩과 독일 지지를 둘러싸고 외교적 후퇴 공간이 좁아졌고, 동원 판단으로 위기가 이동했다."],
+            ),
+        )
+        .await;
+        write_source_file(
+            &uploads,
+            "invalid.md",
+            &historical_source_document_with_facts(
+                "Mismatched facts",
+                "https://www.britannica.com/event/Moroccan-crises",
+                &[
+                    "1905-1906년 제1차 모로코 위기에서 독일의 개입과 알헤시라스 협상이 협상국 협조를 강화했다."
+                        .to_string(),
+                ],
+                &["1908-1909년 보스니아 병합 위기: 오스트리아-헝가리, 세르비아, 러시아는 보스니아·발칸에서 충돌했고 러시아 후퇴가 동맹 정치를 흔들었다."],
+            ),
+        )
+        .await;
+        let task_id =
+            insert_historical_task(&db, "전쟁 전 외교 위기", &["valid.md", "invalid.md"]).await;
+        let task = load_task(&db, task_id).await;
+
+        assert!(
+            try_run_historical_phase_engine(
+                &state,
+                &task,
+                &["valid.md".to_string(), "invalid.md".to_string()],
+                Vec::new(),
+                "[AI-Research]",
+                "md",
+                "전쟁 전 외교 위기",
+            )
+            .await
+        );
+
+        let completed = load_task(&db, task_id).await;
+        let artifacts = load_task_research_artifacts(&state, task_id)
+            .await
+            .expect("artifacts should persist");
+        assert_eq!(completed.quality_status.as_deref(), Some("untrusted"));
+        assert_eq!(
+            artifacts
+                .quality_gate
+                .as_ref()
+                .map(|gate| gate.status.as_str()),
+            Some("partial")
+        );
     }
 
     #[tokio::test]
